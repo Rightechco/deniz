@@ -1,0 +1,43 @@
+    <?php // ویو: app/views/admin/categories/edit.php ?>
+
+    <h1><?php echo htmlspecialchars($data['pageTitle']); ?></h1>
+
+    <?php flash('category_action_fail'); ?>
+    <?php flash('category_form_error'); ?>
+
+    <form action="<?php echo BASE_URL; ?>admin/editCategory/<?php echo $data['id']; ?>" method="post">
+        <input type="hidden" name="id" value="<?php echo $data['id']; ?>">
+
+        <div>
+            <label for="name">نام دسته‌بندی: <sup>*</sup></label>
+            <input type="text" name="name" id="name" value="<?php echo htmlspecialchars(isset($data['name']) ? $data['name'] : ''); ?>" required>
+            <span class="error-text"><?php echo isset($data['name_err']) ? $data['name_err'] : ''; ?></span>
+        </div>
+
+        <div>
+            <label for="description">توضیحات دسته‌بندی:</label>
+            <textarea name="description" id="description" rows="3"><?php echo htmlspecialchars(isset($data['description']) ? $data['description'] : ''); ?></textarea>
+        </div>
+
+        <div>
+            <label for="parent_id">دسته‌بندی والد (اختیاری):</label>
+            <select name="parent_id" id="parent_id">
+                <option value="">-- بدون والد (دسته‌بندی اصلی) --</option>
+                <?php if (!empty($data['all_categories'])): ?>
+                    <?php foreach($data['all_categories'] as $cat): ?>
+                        <?php if ($cat['id'] == $data['id']) continue; // خود دسته نمی‌تواند والد خودش باشد ?>
+                        <option value="<?php echo $cat['id']; ?>" <?php echo (isset($data['parent_id']) && $data['parent_id'] == $cat['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($cat['name']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </select>
+            <small>توجه: اگر این دسته‌بندی را به عنوان فرزند دسته‌بندی دیگری انتخاب کنید، مطمئن شوید که ایجاد حلقه نمی‌کنید (مثلاً دسته A فرزند B و B فرزند A نباشد).</small>
+        </div>
+
+        <div style="margin-top: 20px;">
+            <button type="submit" name="edit_category_submit">ذخیره تغییرات</button>
+            <a href="<?php echo BASE_URL; ?>admin/categories" class="button-link button-secondary" style="margin-right: 10px;">انصراف</a>
+        </div>
+    </form>
+    
