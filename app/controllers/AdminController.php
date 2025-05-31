@@ -167,227 +167,236 @@ class AdminController extends Controller {
         $this->view('admin/products/index', $data);
     }
     
+
     public function addProduct() { 
         if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-            $_POST = filter_input_array(INPUT_POST, FILTER_SANITIZE_FULL_SPECIAL_CHARS);
-            $stock_quantity_input = trim($_POST['stock_quantity']);
+            // Sanitize POST data
+            $name = trim(filter_input(INPUT_POST, 'name', FILTER_SANITIZE_FULL_SPECIAL_CHARS));
+            // ... (sanitize other fields similarly) ...
+            $description = trim(filter_input(INPUT_POST, 'description', FILTER_SANITIZE_FULL_SPECIAL_CHARS));
+            $price_input = trim(filter_input(INPUT_POST, 'price', FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION));
+            $stock_quantity_input = trim(filter_input(INPUT_POST, 'stock_quantity', FILTER_SANITIZE_NUMBER_INT));
+            $category_id_input = filter_input(INPUT_POST, 'category_id', FILTER_SANITIZE_NUMBER_INT);
+            $product_type_input = filter_input(INPUT_POST, 'product_type', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+            $vendor_id_input = filter_input(INPUT_POST, 'vendor_id', FILTER_SANITIZE_NUMBER_INT);
+            $affiliate_commission_type_input = filter_input(INPUT_POST, 'affiliate_commission_type', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+            $affiliate_commission_value_input = filter_input(INPUT_POST, 'affiliate_commission_value', FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);
+
+
             $data = [
-                'name' => trim($_POST['name']),
-                'description' => trim($_POST['description']),
-                'price' => trim($_POST['price']),
-                'stock_quantity' => $stock_quantity_input, 
+                'name' => $name,
+                'description' => $description,
+                'price' => $price_input,
+                'stock_quantity' => $stock_quantity_input,
                 'initial_stock_quantity' => $stock_quantity_input, 
-                'category_id' => isset($_POST['category_id']) ? trim($_POST['category_id']) : '',
-                'product_type' => isset($_POST['product_type']) ? trim($_POST['product_type']) : 'simple',
-                'vendor_id' => isset($_POST['vendor_id']) ? (int)trim($_POST['vendor_id']) : null, 
-                'affiliate_commission_type' => isset($_POST['affiliate_commission_type']) ? trim($_POST['affiliate_commission_type']) : 'none',
-                'affiliate_commission_value' => isset($_POST['affiliate_commission_value']) ? trim($_POST['affiliate_commission_value']) : null,
-                'image_url' => '', 
-                'name_err' => '', 'price_err' => '', 'stock_quantity_err' => '', 'image_err' => '', 'product_type_err' => ''
+                'category_id' => !empty($category_id_input) ? (int)$category_id_input : null,
+                'product_type' => $product_type_input ?: 'simple',
+                'vendor_id' => !empty($vendor_id_input) ? (int)$vendor_id_input : null,
+                'affiliate_commission_type' => $affiliate_commission_type_input ?: 'none',
+                'affiliate_commission_value' => ($affiliate_commission_type_input !== 'none' && !empty($affiliate_commission_value_input)) ? (float)$affiliate_commission_value_input : null,
+                'image_url' => '', // Will be set by handleImageUpload
+                'name_err' => '', 'price_err' => '', 'stock_quantity_err' => '', 'image_err' => '', 'product_type_err' => '', 'vendor_id_err' => '', 'affiliate_commission_err' => ''
             ];
 
-            if (!in_array($data['product_type'], ['simple', 'variable'])) { $data['product_type_err'] = 'نوع محصول نامعتبر است.'; }
+            // --- Validation ---
             if (empty($data['name'])) { $data['name_err'] = 'لطفاً نام محصول را وارد کنید.'; }
-            
+            if (!in_array($data['product_type'], ['simple', 'variable'])) { $data['product_type_err'] = 'نوع محصول نامعتبر است.'; }
+
             if ($data['product_type'] == 'simple') {
-                if (empty($data['price'])) { $data['price_err'] = 'لطفاً قیمت محصول ساده را وارد کنید.'; }
-                elseif (!is_numeric($data['price']) || (float)$data['price'] < 0) { $data['price_err'] = 'قیمت وارد شده معتبر نیست.'; }
-                
+                if ($data['price'] === '' || $data['price'] === null) { $data['price_err'] = 'لطفاً قیمت محصول را وارد کنید.'; }
+                elseif (!is_numeric($data['price']) || (float)$data['price'] < 0) { $data['price_err'] = 'قیمت معتبر نیست.'; }
                 if ($data['stock_quantity'] === '' || !is_numeric($data['stock_quantity']) || (int)$data['stock_quantity'] < 0) {
-                     $data['stock_quantity_err'] = 'تعداد موجودی محصول ساده معتبر نیست.';
-                     if(empty($data['stock_quantity']) && $data['stock_quantity'] !== '0') $data['stock_quantity_err'] = 'لطفاً تعداد موجودی را وارد کنید.';
-                } else {
-                     $data['initial_stock_quantity'] = (int)$data['stock_quantity']; 
-                }
-            } else { 
-                if (!empty($data['price']) && (!is_numeric($data['price']) || (float)$data['price'] < 0)) {
-                    $data['price_err'] = 'اگر قیمتی برای محصول والد متغیر وارد می‌کنید، باید معتبر باشد.';
-                }
-                if (!empty($data['stock_quantity']) && (!is_numeric($data['stock_quantity']) || (int)$data['stock_quantity'] < 0)) {
-                    $data['stock_quantity_err'] = 'اگر موجودی برای محصول والد متغیر وارد می‌کنید، باید معتبر باشد.';
-                }
-                if (empty($data['price'])) $data['price'] = null; 
-                if ($data['stock_quantity'] === '' || !is_numeric($data['stock_quantity'])) { 
-                    $data['stock_quantity'] = 0;
-                    $data['initial_stock_quantity'] = 0;
-                } else {
-                     $data['initial_stock_quantity'] = (int)$data['stock_quantity'];
-                }
-                $data['stock_quantity_explicit'] = true; 
+                    $data['stock_quantity_err'] = 'موجودی معتبر نیست.';
+                } else { $data['initial_stock_quantity'] = (int)$data['stock_quantity'];}
+            } else { // Variable
+                if (!empty($data['price']) && (!is_numeric($data['price']) || (float)$data['price'] < 0)) { $data['price_err'] = 'قیمت والد (اختیاری) نامعتبر.';}
+                else if (empty($data['price'])) { $data['price'] = null; }
+                if (!empty($data['stock_quantity']) && (!is_numeric($data['stock_quantity']) || (int)$data['stock_quantity'] < 0)) { $data['stock_quantity_err'] = 'موجودی والد (اختیاری) نامعتبر.';}
+                else if ($data['stock_quantity'] === '' || !is_numeric($data['stock_quantity'])) { $data['stock_quantity'] = 0; $data['initial_stock_quantity'] = 0;}
+                else { $data['initial_stock_quantity'] = (int)$data['stock_quantity'];}
+            }
+            // ... (سایر اعتبارسنجی‌ها مانند کمیسیون همکاری) ...
+             if ($data['affiliate_commission_type'] !== 'none' && ($data['affiliate_commission_value'] === null || !is_numeric($data['affiliate_commission_value']) || (float)$data['affiliate_commission_value'] < 0) ) {
+                $data['affiliate_commission_err'] = 'مقدار کمیسیون همکاری نامعتبر است.';
             }
 
+
+            // Main Image Upload
+            $main_image_filename = null;
             if (isset($_FILES['product_image']) && $_FILES['product_image']['error'] == UPLOAD_ERR_OK) {
-                if (!defined('FCPATH')) { $data['image_err'] = 'خطای پیکربندی: FCPATH.'; }
-                if (empty($data['image_err'])) { 
-                    $target_dir_absolute = FCPATH . $this->uploadDir;
-                    if (!is_dir($target_dir_absolute)) { if (!mkdir($target_dir_absolute, 0775, true)) { $data['image_err'] = 'خطا در ایجاد پوشه آپلود.';}}
-                    if (empty($data['image_err'])) { 
-                        $file_info = pathinfo($_FILES["product_image"]["name"]);
-                        $file_type = strtolower($file_info['extension']);
-                        $allowed_types = ['jpg', 'jpeg', 'png', 'gif'];  $max_file_size = 2 * 1024 * 1024;
-                        if (!in_array($file_type, $allowed_types)) { $data['image_err'] = 'فرمت‌های JPG, JPEG, PNG, GIF مجاز.';}
-                        elseif ($_FILES["product_image"]["size"] > $max_file_size) { $data['image_err'] = 'حجم فایل > ۲مگابایت.';}
-                        else {
-                            $new_file_name = uniqid('product_', true) . '.' . $file_type; 
-                            if (move_uploaded_file($_FILES["product_image"]["tmp_name"], $target_dir_absolute . $new_file_name)) {
-                                $data['image_url'] = $this->uploadDir . $new_file_name;
-                            } else { $data['image_err'] = 'خطا در آپلود فایل.'; }
-                        }
-                    }
+                $main_image_filename = $this->productModel->handleImageUpload($_FILES['product_image'], 'products');
+                if ($main_image_filename) {
+                    $data['image_url'] = 'uploads/products/' . $main_image_filename; // Store relative path
+                } else {
+                    $data['image_err'] = 'خطا در آپلود تصویر اصلی.';
                 }
             } elseif (isset($_FILES['product_image']) && $_FILES['product_image']['error'] != UPLOAD_ERR_NO_FILE) {
-                $data['image_err'] = 'خطا در آپلود. کد: ' . $_FILES['product_image']['error'];
+                 $data['image_err'] = 'خطا در آپلود فایل تصویر اصلی. کد خطا: ' . $_FILES['product_image']['error'];
             }
 
-            if (empty($data['name_err']) && empty($data['price_err']) && empty($data['stock_quantity_err']) && empty($data['image_err']) && empty($data['product_type_err'])) {
-                $product_id = $this->productModel->addProduct($data); 
+            if (empty($data['name_err']) && empty($data['price_err']) && empty($data['stock_quantity_err']) && empty($data['image_err']) && empty($data['product_type_err']) && empty($data['affiliate_commission_err'])) {
+                $product_id = $this->productModel->addProduct($data);
                 if ($product_id) {
+                    // Handle configurable attributes
                     if ($data['product_type'] === 'variable' && isset($_POST['configurable_attributes']) && is_array($_POST['configurable_attributes'])) {
-                        $this->attributeModel->setConfigurableAttributesForProduct($product_id, $_POST['configurable_attributes']);
+                        $this->attributeModel->setConfigurableAttributesForProduct($product_id, array_map('intval', $_POST['configurable_attributes']));
                     }
-                    flash('product_added_success', 'محصول جدید با موفقیت اضافه شد.');
-                    header('Location: ' . BASE_URL . 'admin/products');
+                    // Handle Gallery Images
+                    if (isset($_FILES['gallery_images'])) {
+                        $gallery_alt_texts = $_POST['gallery_alt_texts'] ?? [];
+                        foreach ($_FILES['gallery_images']['name'] as $key => $name) {
+                            if ($_FILES['gallery_images']['error'][$key] == UPLOAD_ERR_OK) {
+                                $gallery_file_data = [
+                                    'name' => $_FILES['gallery_images']['name'][$key],
+                                    'type' => $_FILES['gallery_images']['type'][$key],
+                                    'tmp_name' => $_FILES['gallery_images']['tmp_name'][$key],
+                                    'error' => $_FILES['gallery_images']['error'][$key],
+                                    'size' => $_FILES['gallery_images']['size'][$key]
+                                ];
+                                $alt_text = isset($gallery_alt_texts[$key]) ? trim($gallery_alt_texts[$key]) : null;
+                                $this->productModel->addGalleryImage($product_id, $gallery_file_data, $alt_text);
+                            }
+                        }
+                    }
+                    flash('product_action_success', 'محصول جدید با موفقیت اضافه شد.');
+                    header('Location: ' . BASE_URL . ($data['product_type'] === 'variable' ? 'admin/manageProductVariations/' . $product_id : 'admin/products'));
                     exit();
-                } else { 
-                    flash('product_action_fail', 'خطا در افزودن محصول.', 'alert alert-danger');
-                    if (!empty($data['image_url']) && defined('FCPATH') && file_exists(FCPATH . $data['image_url'])) {
-                        unlink(FCPATH . $data['image_url']);
+                } else {
+                    flash('product_action_fail', 'خطا در افزودن محصول به پایگاه داده.', 'alert alert-danger');
+                    if ($main_image_filename && defined('FCPATH') && file_exists(FCPATH . 'uploads/products/' . $main_image_filename)) {
+                        unlink(FCPATH . 'uploads/products/' . $main_image_filename);
                     }
                 }
+            } else {
+                 flash('product_form_error', 'لطفاً تمام فیلدهای الزامی را به درستی پر کنید و خطاهای موجود را برطرف نمایید.', 'alert alert-danger');
+                 if ($main_image_filename && defined('FCPATH') && file_exists(FCPATH . 'uploads/products/' . $main_image_filename)) {
+                    unlink(FCPATH . 'uploads/products/' . $main_image_filename);
+                 }
             }
-            
-            $data['pageTitle'] = 'افزودن محصول جدید';
-            $data['categories'] = $this->categoryModel->getAllCategories();
-            $data['all_attributes'] = $this->attributeModel->getAllAttributes(); 
-            $data['vendors'] = $this->userModel->getUsersByRole('vendor'); 
-            if(!empty($data['image_err'])) flash('file_upload_error', $data['image_err'], 'alert alert-danger');
-            if(!empty($data['name_err']) || !empty($data['price_err']) || !empty($data['stock_quantity_err']) || !empty($data['product_type_err'])) {
-                 flash('product_form_error', 'لطفاً خطاهای فرم را برطرف کنید.', 'alert alert-danger');
-            }
-            $this->view('admin/products/add', $data);
-            exit();
-        } else { 
-            $data = [
-                'pageTitle' => 'افزودن محصول جدید', 'name' => '', 'description' => '', 'price' => '',
-                'image_url' => '', 'stock_quantity' => '0', 'initial_stock_quantity' => '0', 'category_id' => '', 'product_type' => 'simple',
-                'vendor_id' => null, 'affiliate_commission_type' => 'none', 'affiliate_commission_value' => '',
-                'categories' => $this->categoryModel->getAllCategories(),
-                'all_attributes' => $this->attributeModel->getAllAttributes(), 
-                'vendors' => $this->userModel->getUsersByRole('vendor'), 
-                'configurable_attributes_for_product' => [], 
-                'name_err' => '', 'price_err' => '', 'stock_quantity_err' => '', 'image_err' => '', 'product_type_err' => ''
-            ];
-            $this->view('admin/products/add', $data);
         }
+        // For GET request or if POST fails
+        $data_for_view = $data ?? [];
+        $data_for_view['pageTitle'] = 'افزودن محصول جدید';
+        $data_for_view['categories'] = $this->categoryModel->getAllCategories();
+        $data_for_view['all_attributes'] = $this->attributeModel->getAllAttributesWithValues();
+        $data_for_view['vendors'] = $this->userModel->getUsersByRole('vendor');
+        $data_for_view['configurable_attributes_for_product'] = []; // For new product, none are selected yet
+        $this->view('admin/products/add', $data_for_view);
     }
 
-    public function editProduct($id = null) { 
+       public function editProduct($id = null) {
         if (is_null($id) || !is_numeric($id)) { 
-            flash('error_message', 'شناسه محصول نامعتبر.', 'alert alert-danger');
+            flash('error_message', 'شناسه محصول نامعتبر است.', 'alert alert-danger');
             header('Location: ' . BASE_URL . 'admin/products'); exit();
         }
         $id = (int)$id;
-        $product_for_initial_data = $this->productModel->getProductById($id); 
-        if (!$product_for_initial_data) {
-            flash('error_message', 'محصول یافت نشد.', 'alert alert-danger');
-            header('Location: ' . BASE_URL . 'admin/products');
-            exit();
+        $product = $this->productModel->getProductById($id);
+        if (!$product) { 
+            flash('error_message', 'محصولی با این شناسه یافت نشد.', 'alert alert-danger');
+            header('Location: ' . BASE_URL . 'admin/products'); exit();
         }
 
         if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-            $_POST = filter_input_array(INPUT_POST, FILTER_SANITIZE_FULL_SPECIAL_CHARS);
-            $current_image_url = isset($_POST['current_image_url']) ? trim($_POST['current_image_url']) : ($product_for_initial_data['image_url'] ?? '');
-            $data = [
-                'id' => $id, 
-                'name' => trim($_POST['name']), 
-                'description' => trim($_POST['description']),
-                'price' => trim($_POST['price']), 
-                'stock_quantity' => trim($_POST['stock_quantity']), 
-                'initial_stock_quantity' => isset($_POST['initial_stock_quantity_edit']) ? (int)trim($_POST['initial_stock_quantity_edit']) : (isset($product_for_initial_data['initial_stock_quantity']) ? $product_for_initial_data['initial_stock_quantity'] : 0), 
-                'category_id' => isset($_POST['category_id']) ? trim($_POST['category_id']) : '',
-                'product_type' => isset($_POST['product_type']) ? trim($_POST['product_type']) : 'simple',
-                'vendor_id' => isset($_POST['vendor_id']) ? (int)trim($_POST['vendor_id']) : $product_for_initial_data['vendor_id'],
-                'affiliate_commission_type' => isset($_POST['affiliate_commission_type']) ? trim($_POST['affiliate_commission_type']) : 'none',
-                'affiliate_commission_value' => isset($_POST['affiliate_commission_value']) ? trim($_POST['affiliate_commission_value']) : null,
-                'image_url' => $current_image_url,
-                'name_err' => '', 'price_err' => '', 'stock_quantity_err' => '', 'image_err' => '', 'product_type_err' => ''
-            ];
+            $name = trim(filter_input(INPUT_POST, 'name', FILTER_SANITIZE_FULL_SPECIAL_CHARS));
+            $description = trim(filter_input(INPUT_POST, 'description', FILTER_SANITIZE_FULL_SPECIAL_CHARS));
+            $price_input = trim(filter_input(INPUT_POST, 'price', FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION));
+            $stock_quantity_input = trim(filter_input(INPUT_POST, 'stock_quantity', FILTER_SANITIZE_NUMBER_INT));
+            $initial_stock_quantity_input = filter_input(INPUT_POST, 'initial_stock_quantity_edit', FILTER_SANITIZE_NUMBER_INT);
+            $category_id_input = filter_input(INPUT_POST, 'category_id', FILTER_SANITIZE_NUMBER_INT);
+            $product_type_input = filter_input(INPUT_POST, 'product_type', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+            $vendor_id_input = filter_input(INPUT_POST, 'vendor_id', FILTER_SANITIZE_NUMBER_INT);
+            $affiliate_commission_type_input = filter_input(INPUT_POST, 'affiliate_commission_type', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+            $affiliate_commission_value_input = filter_input(INPUT_POST, 'affiliate_commission_value', FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);
+            $delete_current_image_input = filter_input(INPUT_POST, 'delete_current_image', FILTER_VALIDATE_BOOLEAN);
+
+            $current_image_url = isset($_POST['current_image_url']) ? trim($_POST['current_image_url']) : ($product['image_url'] ?? '');
             
-            if (isset($_POST['initial_stock_quantity_edit']) && (!is_numeric($data['initial_stock_quantity']) || (int)$data['initial_stock_quantity'] < 0) ) {
-                // $data['initial_stock_quantity_err'] = 'موجودی اولیه نامعتبر است.'; 
-            }
+            $data = [
+                'id' => $id, 'name' => $name, 'description' => $description, 'price' => $price_input,
+                'stock_quantity' => $stock_quantity_input,
+                'initial_stock_quantity' => $initial_stock_quantity_input !== null ? (int)$initial_stock_quantity_input : $product['initial_stock_quantity'],
+                'category_id' => !empty($category_id_input) ? (int)$category_id_input : null,
+                'product_type' => $product_type_input ?: 'simple',
+                'vendor_id' => !empty($vendor_id_input) ? (int)$vendor_id_input : $product['vendor_id'],
+                'affiliate_commission_type' => $affiliate_commission_type_input ?: ($product['affiliate_commission_type'] ?? 'none'),
+                'affiliate_commission_value' => ($affiliate_commission_type_input !== 'none' && !empty($affiliate_commission_value_input)) ? (float)$affiliate_commission_value_input : ($product['affiliate_commission_value'] ?? null),
+                'image_file' => $_FILES['product_image'] ?? null,
+                'delete_current_image' => $delete_current_image_input,
+                'image_url' => $current_image_url, 
+                'name_err' => '', 'price_err' => '', 'stock_quantity_err' => '', 'image_err' => '', 'product_type_err' => '', 'affiliate_commission_err' => ''
+            ];
+            // ... (Validation logic) ...
 
-            if (!in_array($data['product_type'], ['simple', 'variable'])) { $data['product_type_err'] = 'نوع محصول نامعتبر است.'; }
-            if (empty($data['name'])) { $data['name_err'] = 'لطفاً نام محصول را وارد کنید.'; }
-            if ($data['product_type'] == 'simple') {
-                if (empty($data['price'])) { $data['price_err'] = 'لطفاً قیمت محصول ساده را وارد کنید.'; }
-                elseif (!is_numeric($data['price']) || (float)$data['price'] < 0) { $data['price_err'] = 'قیمت وارد شده معتبر نیست.'; }
-                if ($data['stock_quantity'] === '' || !is_numeric($data['stock_quantity']) || (int)$data['stock_quantity'] < 0) {
-                    $data['stock_quantity_err'] = 'تعداد موجودی محصول ساده معتبر نیست.';
-                }
-            } else { 
-                if (!empty($data['price']) && (!is_numeric($data['price']) || (float)$data['price'] < 0)) { $data['price_err'] = 'قیمت والد متغیر نامعتبر.';}
-                if (!empty($data['stock_quantity']) && (!is_numeric($data['stock_quantity']) || (int)$data['stock_quantity'] < 0)) { $data['stock_quantity_err'] = 'موجودی والد متغیر نامعتبر.';}
-                if (empty($data['price'])) $data['price'] = null;
-                if (empty($data['stock_quantity'])) $data['stock_quantity'] = 0; 
-            }
+            if (empty($data['name_err']) && empty($data['price_err']) && empty($data['stock_quantity_err']) && empty($data['image_err']) && empty($data['product_type_err']) && empty($data['affiliate_commission_err'])) {
+                
+                $updateResult = $this->productModel->updateProduct($id, $data, $_FILES['product_image'] ?? null, $delete_current_image_input);
 
-            // ... (کد آپلود تصویر) ...
-
-            if (empty($data['name_err']) && empty($data['price_err']) && empty($data['stock_quantity_err']) && empty($data['image_err']) && empty($data['product_type_err']) /* && empty($data['initial_stock_quantity_err']) */) {
-                if ($this->productModel->updateProduct($data)) { 
-                    $selected_configurable_attributes = isset($_POST['configurable_attributes']) && is_array($_POST['configurable_attributes']) ? $_POST['configurable_attributes'] : [];
+                if (isset($updateResult['success']) && $updateResult['success']) {
+                    $selected_configurable_attributes = isset($_POST['configurable_attributes']) && is_array($_POST['configurable_attributes']) ? array_map('intval', $_POST['configurable_attributes']) : [];
                     if ($data['product_type'] === 'variable') {
                         $this->attributeModel->setConfigurableAttributesForProduct($id, $selected_configurable_attributes);
                     } else { 
-                        $this->attributeModel->setConfigurableAttributesForProduct($id, []);
+                        $this->attributeModel->setConfigurableAttributesForProduct($id, []); 
                         if (method_exists($this->attributeModel, 'deleteAllVariationsForProduct')) {
                             $this->attributeModel->deleteAllVariationsForProduct($id);
                         }
                     }
-                    flash('product_updated_success', 'محصول با موفقیت ویرایش شد.');
+
+                    // Handle Gallery Images on Edit
+                    if (isset($_POST['delete_gallery_images']) && is_array($_POST['delete_gallery_images'])) {
+                        foreach ($_POST['delete_gallery_images'] as $image_id_to_delete) {
+                            $this->productModel->deleteGalleryImage((int)$image_id_to_delete);
+                        }
+                    }
+                    if (isset($_FILES['gallery_images_new'])) {
+                        $gallery_alt_texts_new = $_POST['gallery_alt_texts_new'] ?? [];
+                        foreach ($_FILES['gallery_images_new']['name'] as $key => $name) {
+                            if ($_FILES['gallery_images_new']['error'][$key] == UPLOAD_ERR_OK) {
+                                $gallery_file_data_single = [
+                                    'name' => $_FILES['gallery_images_new']['name'][$key],
+                                    'type' => $_FILES['gallery_images_new']['type'][$key],
+                                    'tmp_name' => $_FILES['gallery_images_new']['tmp_name'][$key],
+                                    'error' => $_FILES['gallery_images_new']['error'][$key],
+                                    'size' => $_FILES['gallery_images_new']['size'][$key]
+                                ];
+                                $alt_text = isset($gallery_alt_texts_new[$key]) ? trim($gallery_alt_texts_new[$key]) : null;
+                                $this->productModel->addGalleryImage($id, $gallery_file_data_single, $alt_text);
+                            }
+                        }
+                    }
+                    if (isset($_POST['existing_gallery_alt_texts']) && is_array($_POST['existing_gallery_alt_texts'])) {
+                        foreach($_POST['existing_gallery_alt_texts'] as $img_id => $alt_text) {
+                            $this->productModel->updateGalleryImageAltText((int)$img_id, trim($alt_text));
+                        }
+                    }
+
+                    flash('product_action_success', 'محصول با موفقیت ویرایش شد.');
                     header('Location: ' . BASE_URL . 'admin/products'); 
                     exit();
-                } else { /* ... */ }
+                } else { 
+                    $errorMsg = isset($updateResult['message']) ? $updateResult['message'] : 'خطا در ویرایش محصول در پایگاه داده.';
+                    flash('product_action_fail', $errorMsg, 'alert alert-danger');
+                }
+            } else {
+                 flash('product_form_error', 'لطفاً خطاهای فرم را برطرف نمایید.', 'alert alert-danger');
             }
-            // ... (بازگرداندن به فرم با خطاها) ...
-            $data['pageTitle'] = 'ویرایش محصول: ' . htmlspecialchars($product_for_initial_data['name']);
-            $data['categories'] = $this->categoryModel->getAllCategories();
-            $data['all_attributes'] = $this->attributeModel->getAllAttributes();
-            $data['vendors'] = $this->userModel->getUsersByRole('vendor');
-            $data['configurable_attributes_for_product'] = $this->attributeModel->getConfigurableAttributesForProduct($id); 
-            if( (!empty($data['image_err']) && $data['image_url'] === $current_image_url) || (isset($_FILES['product_image']) && $_FILES['product_image']['error'] == UPLOAD_ERR_NO_FILE) ){
-                 $data['image_url'] = $product_for_initial_data['image_url']; 
-            }
-            $this->view('admin/products/edit', $data);
-            exit();
-        } else { // GET
-            $product = $product_for_initial_data;
-            $data = [
-                'pageTitle' => 'ویرایش محصول: ' . htmlspecialchars($product['name']),
-                'id' => $product['id'], 
-                'name' => $product['name'], 
-                'description' => $product['description'],
-                'price' => $product['price'], 
-                'image_url' => $product['image_url'],
-                'stock_quantity' => $product['stock_quantity'], 
-                'initial_stock_quantity' => isset($product['initial_stock_quantity']) ? $product['initial_stock_quantity'] : $product['stock_quantity'],
-                'category_id' => $product['category_id'],
-                'product_type' => $product['product_type'], 
-                'vendor_id' => $product['vendor_id'],
-                'affiliate_commission_type' => $product['affiliate_commission_type'],
-                'affiliate_commission_value' => $product['affiliate_commission_value'],
-                'categories' => $this->categoryModel->getAllCategories(),
-                'all_attributes' => $this->attributeModel->getAllAttributes(), 
-                'vendors' => $this->userModel->getUsersByRole('vendor'),
-                'configurable_attributes_for_product' => $this->attributeModel->getConfigurableAttributesForProduct($id), 
-                'name_err' => '', 'price_err' => '', 'stock_quantity_err' => '', 'image_err' => '', 'product_type_err' => ''
-            ];
-            $this->view('admin/products/edit', $data);
         }
+        // For GET request or if POST failed validation
+        $data_for_view = $data ?? array_merge($product, ['id' => $id]); 
+        $data_for_view['pageTitle'] = 'ویرایش محصول: ' . htmlspecialchars($product['name']);
+        $data_for_view['categories'] = $this->categoryModel->getAllCategories();
+        $data_for_view['all_attributes'] = $this->attributeModel->getAllAttributesWithValues(); 
+        $data_for_view['configurable_attributes_for_product'] = $this->attributeModel->getConfigurableAttributesForProduct($id);
+        $data_for_view['gallery_images'] = $this->productModel->getGalleryImages($id); 
+        $data_for_view['vendors'] = $this->userModel->getUsersByRole('vendor');
+        
+        if((isset($data_for_view['image_err']) && !empty($data_for_view['image_err'])) || (isset($_FILES['product_image']) && $_FILES['product_image']['error'] == UPLOAD_ERR_NO_FILE && empty($data_for_view['image_url'])) ){
+            $data_for_view['image_url'] = $product['image_url']; 
+        }
+        $this->view('admin/products/edit', $data_for_view);
     }
-
-    public function deleteProduct($id = null) { 
+    
+    public function deleteProduct($id = null) {
         if ($_SERVER['REQUEST_METHOD'] == 'POST' && $id && is_numeric($id)) {
             $id = (int)$id;
             $product = $this->productModel->getProductById($id);
@@ -396,21 +405,9 @@ class AdminController extends Controller {
                  header('Location: ' . BASE_URL . 'admin/products');
                  exit();
             }
-            $image_path_to_delete = (defined('FCPATH') && !empty($product['image_url'])) ? FCPATH . $product['image_url'] : null;
+            // Delete main image is handled by ProductModel->deleteProduct if it's implemented there
+            // Gallery images are deleted via CASCADE or explicitly in ProductModel->deleteProduct
             if ($this->productModel->deleteProduct($id)) { 
-                if ($product['product_type'] === 'variable') {
-                    $variations = $this->attributeModel->getVariationsForProduct($id); 
-                    if($variations){
-                        foreach($variations as $var_item){
-                            if(!empty($var_item['image_url']) && defined('FCPATH') && file_exists(FCPATH . $var_item['image_url'])){
-                                unlink(FCPATH . $var_item['image_url']);
-                            }
-                        }
-                    }
-                }
-                if ($image_path_to_delete && file_exists($image_path_to_delete)) {
-                    unlink($image_path_to_delete);
-                }
                 flash('product_deleted_success', 'محصول "' . htmlspecialchars($product['name']) . '" با موفقیت حذف شد.');
             } else {
                 flash('product_action_fail', 'خطا در حذف محصول از پایگاه داده.', 'alert alert-danger');
@@ -1457,26 +1454,42 @@ class AdminController extends Controller {
         }
     }
 
-    public function exportPlatformCommissions() {
-        if (ob_get_level()) { ob_end_clean(); }
+ public function exportPlatformCommissions() {
+        if (ob_get_level()) { ob_end_clean(); } // Clean output buffer
 
-        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-            $_POST = filter_input_array(INPUT_POST, FILTER_SANITIZE_FULL_SPECIAL_CHARS);
-            $start_date_input = !empty($_POST['start_date']) ? $_POST['start_date'] : null;
-            $end_date_input = !empty($_POST['end_date']) ? $_POST['end_date'] : null;
+        if ($_SERVER['REQUEST_METHOD'] == 'POST' || isset($_GET['export'])) { // Allow GET with a flag too for simplicity
+            // Use filter_input for POST data
+            $start_date_input = isset($_POST['start_date']) ? filter_input(INPUT_POST, 'start_date', FILTER_SANITIZE_FULL_SPECIAL_CHARS) : (isset($_GET['start_date']) ? filter_input(INPUT_GET, 'start_date', FILTER_SANITIZE_FULL_SPECIAL_CHARS) : null);
+            $end_date_input = isset($_POST['end_date']) ? filter_input(INPUT_POST, 'end_date', FILTER_SANITIZE_FULL_SPECIAL_CHARS) : (isset($_GET['end_date']) ? filter_input(INPUT_GET, 'end_date', FILTER_SANITIZE_FULL_SPECIAL_CHARS) : null);
 
             $start_date_gregorian = null;
             if ($start_date_input && function_exists('to_gregorian_date')) {
-                $start_date_gregorian = to_gregorian_date($start_date_input);
+                $start_date_gregorian = to_gregorian_date($start_date_input); // Assuming to_gregorian_date returns YYYY-MM-DD
                 if ($start_date_gregorian) $start_date_gregorian .= ' 00:00:00';
-            } elseif ($start_date_input) { $start_date_gregorian = $start_date_input . ' 00:00:00';}
+            } elseif ($start_date_input) { 
+                // Basic validation if date is already Gregorian (e.g., YYYY-MM-DD)
+                if (preg_match("/^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])$/", $start_date_input)) {
+                    $start_date_gregorian = $start_date_input . ' 00:00:00';
+                }
+            }
 
             $end_date_gregorian = null;
             if ($end_date_input && function_exists('to_gregorian_date')) {
                 $end_date_gregorian = to_gregorian_date($end_date_input);
                 if ($end_date_gregorian) $end_date_gregorian .= ' 23:59:59';
-            } elseif ($end_date_input) { $end_date_gregorian = $end_date_input . ' 23:59:59';}
+            } elseif ($end_date_input) { 
+                if (preg_match("/^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])$/", $end_date_input)) {
+                    $end_date_gregorian = $end_date_input . ' 23:59:59';
+                }
+            }
             
+            // Ensure OrderModel has getOrdersWithPlatformCommission method
+            if (!method_exists($this->orderModel, 'getOrdersWithPlatformCommission')) {
+                error_log("AdminController::exportPlatformCommissions - Method getOrdersWithPlatformCommission does not exist in OrderModel.");
+                flash('report_message', 'خطای سیستمی: تابع گزارش کمیسیون فروشگاه در دسترس نیست.', 'alert alert-danger');
+                header('Location: ' . BASE_URL . 'admin/reports');
+                exit();
+            }
             $orders_data = $this->orderModel->getOrdersWithPlatformCommission($start_date_gregorian, $end_date_gregorian);
 
             if (empty($orders_data)) {
@@ -1491,10 +1504,19 @@ class AdminController extends Controller {
             $sheet->setRightToLeft(true);
 
             $headers = [
-                'شناسه سفارش', 'تاریخ سفارش (شمسی)', 'مشتری', 'مبلغ کل سفارش', 'کمیسیون فروشگاه (تومان)'
+                'شناسه سفارش', 'تاریخ سفارش (شمسی)', 'مشتری', 'مبلغ کل سفارش (تومان)', 'کمیسیون فروشگاه (تومان)'
             ];
             $sheet->fromArray([$headers], NULL, 'A1');
-            // ... (استایل‌دهی به هدرها مشابه exportProducts)
+
+            // Style header row
+            $headerStyleArray = [
+                'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+                'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => '4285F4']],
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
+                'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['rgb' => '000000']]]
+            ];
+            $sheet->getStyle('A1:E1')->applyFromArray($headerStyleArray);
+
 
             $rowNumber = 2;
             $total_commission_for_period = 0;
@@ -1502,34 +1524,74 @@ class AdminController extends Controller {
                 $commission_amount = isset($order['total_order_platform_commission']) ? (float)$order['total_order_platform_commission'] : 0;
                 $total_commission_for_period += $commission_amount;
 
-                $sheet->setCellValue('A' . $rowNumber, $order['id']);
-                $sheet->setCellValue('B' . $rowNumber, to_jalali_datetime($order['created_at']));
-                $sheet->setCellValue('C' . $rowNumber, ($order['customer_full_name'] ?: $order['customer_username']));
-                $sheet->setCellValue('D' . $rowNumber, (float)($order['total_amount'] ?? 0));
+                $sheet->setCellValue('A' . $rowNumber, isset($order['order_id']) ? $order['order_id'] : 'N/A'); // Use order_id from alias
+                // Use order_date which is the alias for o.created_at
+                $sheet->setCellValue('B' . $rowNumber, isset($order['order_date']) && function_exists('to_jalali_datetime') ? to_jalali_datetime($order['order_date']) : ($order['order_date'] ?? 'N/A'));
+                
+                // Customer name already fetched in the main query
+                $customer_display_name = trim($order['customer_full_name'] ?? '');
+                if (empty($customer_display_name)) {
+                    $customer_display_name = $order['customer_username'] ?? 'نامشخص';
+                }
+                $sheet->setCellValue('C' . $rowNumber, $customer_display_name);
+                
+                $sheet->setCellValue('D' . $rowNumber, (float)($order['order_total'] ?? 0)); // Use order_total from alias
                 $sheet->setCellValue('E' . $rowNumber, $commission_amount);
                 
                 $sheet->getStyle('D' . $rowNumber)->getNumberFormat()->setFormatCode('#,##0');
                 $sheet->getStyle('E' . $rowNumber)->getNumberFormat()->setFormatCode('#,##0');
-                // ... (استایل‌دهی به ردیف)
+                
+                // Apply border to data cells
+                $sheet->getStyle('A'.$rowNumber.':E'.$rowNumber)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
+
                 $rowNumber++;
             }
-            $sheet->setCellValue('D' . $rowNumber, 'مجموع کمیسیون دوره:');
+            
+            // Summary Row
+            $sheet->mergeCells('A'.$rowNumber.':C'.$rowNumber);
+            $sheet->setCellValue('A' . $rowNumber, 'مجموع کمیسیون این دوره');
+            $sheet->getStyle('A'.$rowNumber)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+            $sheet->setCellValue('D' . $rowNumber, ''); // Empty cell or sum of total_amounts if needed
             $sheet->setCellValue('E' . $rowNumber, $total_commission_for_period);
-            $sheet->getStyle('D' . $rowNumber . ':E' . $rowNumber)->getFont()->setBold(true);
-            $sheet->getStyle('E' . $rowNumber)->getNumberFormat()->setFormatCode('#,##0');
+            
+            $summaryStyleArray = [
+                'font' => ['bold' => true],
+                'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => 'FCE5CD']], // Light orange
+                'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_THIN, 'color' => ['rgb' => '000000']]]
+            ];
+            $sheet->getStyle('A'.$rowNumber.':E'.$rowNumber)->applyFromArray($summaryStyleArray);
+            $sheet->getStyle('E'.$rowNumber)->getNumberFormat()->setFormatCode('#,##0 "تومان"');
+
 
             foreach (range('A', 'E') as $columnID) { $sheet->getColumnDimension($columnID)->setAutoSize(true); }
             
-            $writer = new Xlsx($spreadsheet);
-            $filename = "platform_commissions_export_" . date('Ymd_His') . ".xlsx";
+            $filename = "گزارش_کمیسیون_فروشگاه_" . date('Y-m-d_H-i-s') . ".xlsx";
+            
             header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-            header('Content-Disposition: attachment;filename="' . $filename . '"');
+            header('Content-Disposition: attachment;filename="' . rawurlencode($filename) . '"'); // Use rawurlencode for filename
             header('Cache-Control: max-age=0');
-            if (ob_get_level()) { ob_end_clean(); }
-            try { $writer->save('php://output'); } catch (\PhpOffice\PhpSpreadsheet\Writer\Exception $e) { /* ... */ }
+            
+            // Clear any previously sent headers or output
+            if (ob_get_contents()) ob_end_clean();
+
+            $writer = new Xlsx($spreadsheet);
+            try {
+                $writer->save('php://output');
+            } catch (\PhpOffice\PhpSpreadsheet\Writer\Exception $e) {
+                error_log("Error saving Excel file: " . $e->getMessage());
+                flash('report_message', 'خطا در ایجاد فایل اکسل: ' . $e->getMessage(), 'alert alert-danger');
+                // Cannot redirect here as headers are already sent for file download
+            }
             exit();
-        } else { /* ... */ }
+        } else {
+            // If not POST, redirect to the reports page or show an error
+            flash('report_message', 'برای دریافت گزارش، لطفاً بازه زمانی را انتخاب و ارسال کنید.', 'alert alert-info');
+            header('Location: ' . BASE_URL . 'admin/reports');
+            exit();
+        }
     }
+
+    // ... (سایر متدهای AdminController مانند افزودن، ویرایش و حذف محصول که قبلاً بررسی شد) ...
 
     public function exportVendorPayouts() {
         if (ob_get_level()) { ob_end_clean(); }

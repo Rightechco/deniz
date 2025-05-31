@@ -4,7 +4,6 @@
 
 <div style="margin: 20px 0; padding: 15px; background-color: #e9ecef; border-radius: 5px;">
     <h4>نرخ کمیسیون فعلی فروشگاه (سراسری): <?php echo defined('PLATFORM_COMMISSION_RATE') ? (PLATFORM_COMMISSION_RATE * 100) . '%' : 'تعریف نشده'; ?></h4>
-
 </div>
 
 <div style="margin-bottom: 20px; padding: 15px; background-color: #d4edda; border-left: 5px solid #155724; border-radius: 4px;">
@@ -14,7 +13,6 @@
         </span>
     </h3>
 </div>
-
 
 <?php if (isset($data['orders_with_commission']) && !empty($data['orders_with_commission'])): ?>
     <h3>جزئیات کمیسیون برای هر سفارش:</h3>
@@ -33,18 +31,32 @@
         <tbody>
             <?php foreach ($data['orders_with_commission'] as $order): ?>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #ddd;">#<?php echo htmlspecialchars($order['id']); ?></td>
                     <td style="padding: 8px; border: 1px solid #ddd;">
-                        <?php echo htmlspecialchars(isset($order['customer_full_name']) && !empty(trim($order['customer_full_name'])) ? $order['customer_full_name'] : ($order['customer_username'] ?? '')); ?>
-                        <br><small>(<?php echo htmlspecialchars($order['customer_email'] ?? ''); ?>)</small>
+                        #<?php echo isset($order['order_id']) ? htmlspecialchars($order['order_id']) : 'N/A'; // Corrected key ?>
                     </td>
-                    <td style="padding: 8px; border: 1px solid #ddd;"><?php echo htmlspecialchars(to_jalali_datetime($order['created_at'])); ?></td>
-                    <td style="padding: 8px; border: 1px solid #ddd;"><?php echo htmlspecialchars(number_format((float)$order['total_amount'])); ?> تومان</td>
+                    <td style="padding: 8px; border: 1px solid #ddd;">
+                        <?php 
+                        $customerName = '';
+                        if (isset($order['customer_full_name']) && !empty(trim($order['customer_full_name']))) {
+                            $customerName = $order['customer_full_name'];
+                        } elseif (isset($order['customer_username']) && !empty($order['customer_username'])) {
+                            $customerName = $order['customer_username'];
+                        }
+                        echo htmlspecialchars($customerName); 
+                        ?>
+                        <br><small>(<?php echo isset($order['customer_email']) ? htmlspecialchars($order['customer_email']) : 'ایمیل نامشخص'; // Added isset for customer_email ?>)</small>
+                    </td>
+                    <td style="padding: 8px; border: 1px solid #ddd;">
+                        <?php echo isset($order['order_date']) ? htmlspecialchars(to_jalali_datetime($order['order_date'])) : 'N/A'; // Corrected key ?>
+                    </td>
+                    <td style="padding: 8px; border: 1px solid #ddd;">
+                        <?php echo isset($order['order_total']) ? htmlspecialchars(number_format((float)$order['order_total'])) : 'N/A'; // Corrected key ?> تومان
+                    </td>
                     <td style="padding: 8px; border: 1px solid #ddd; color: #198754; font-weight:bold;">
                         <?php echo htmlspecialchars(isset($order['total_order_platform_commission']) ? number_format((float)$order['total_order_platform_commission']) : '0'); ?> تومان
                     </td>
                     <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">
-                        <a href="<?php echo BASE_URL; ?>admin/orderDetails/<?php echo $order['id']; ?>" class="button-link button-info" style="padding: 5px 10px; font-size:0.9em;">مشاهده جزئیات سفارش</a>
+                        <a href="<?php echo BASE_URL . 'admin/orderDetails/' . (isset($order['order_id']) ? $order['order_id'] : ''); // Corrected key ?>" class="button-link button-info" style="padding: 5px 10px; font-size:0.9em;">مشاهده جزئیات سفارش</a>
                     </td>
                 </tr>
             <?php endforeach; ?>
