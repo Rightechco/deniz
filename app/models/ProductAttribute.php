@@ -3,401 +3,545 @@
 
 class ProductAttribute {
     private $db;
+    private $variationUploadDir = 'uploads/variations/';
 
-    public function __construct() { 
+    public function __construct() {
         if (class_exists('Database')) {
             $this->db = new Database();
         } else {
-            // This should ideally not happen if core files are loaded correctly.
-            die("Fatal Error: Database class not found in ProductAttribute model.");
+            error_log("ProductAttributeModel FATAL ERROR: Database class not found.");
+            throw new Exception("Fatal Error: Database class not found in ProductAttribute model.");
         }
     }
 
-    // --- Attribute Methods ---
-
+    // --- Attribute Management ---
     public function getAllAttributes() {
-        $this->db->query("SELECT * FROM attributes ORDER BY name ASC");
-        $results = $this->db->resultSet();
-        return $results ? $results : [];
+        $this->db->query("SELECT * FROM product_attributes ORDER BY name ASC");
+        return $this->db->resultSet() ?: [];
+    }
+
+    public function getAllAttributesWithValues() {
+        $attributes = $this->getAllAttributes();
+        if ($attributes) {
+            foreach ($attributes as $key => $attribute) {
+                if (isset($attribute['id'])) {
+                    $values = $this->getValuesByAttributeId($attribute['id']);
+                    $attributes[$key]['values'] = $values ?: [];
+                } else {
+                    $attributes[$key]['values'] = []; 
+                }
+            }
+        }
+        return $attributes ?: [];
     }
 
     public function getAttributeById($id) {
-        $this->db->query("SELECT * FROM attributes WHERE id = :id");
+        $this->db->query("SELECT * FROM product_attributes WHERE id = :id");
         $this->db->bind(':id', (int)$id);
-        $row = $this->db->single();
-        return ($this->db->rowCount() > 0) ? $row : false;
+        return $this->db->single() ?: false;
     }
-
+    
     public function getAttributeByName($name) {
-        $this->db->query("SELECT * FROM attributes WHERE name = :name");
+        $this->db->query("SELECT * FROM product_attributes WHERE name = :name");
         $this->db->bind(':name', $name);
-        $row = $this->db->single();
-        return ($this->db->rowCount() > 0) ? $row : false;
+        return $this->db->single() ?: false;
     }
 
     public function addAttribute($data) {
-        $this->db->query('INSERT INTO attributes (name) VALUES (:name)');
+        $this->db->query("INSERT INTO product_attributes (name) VALUES (:name)");
         $this->db->bind(':name', $data['name']);
-        return $this->db->execute();
+        if ($this->db->execute()) {
+            return $this->db->lastInsertId();
+        }
+        $db_error_info = $this->db->getErrorInfo();
+        error_log("ProductAttributeModel::addAttribute failed. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'Unknown DB error')));
+        return false;
     }
 
     public function updateAttribute($data) {
-        $this->db->query('UPDATE attributes SET name = :name WHERE id = :id');
+        $this->db->query("UPDATE product_attributes SET name = :name WHERE id = :id");
         $this->db->bind(':id', (int)$data['id']);
         $this->db->bind(':name', $data['name']);
         return $this->db->execute();
     }
 
-    public function deleteAttribute($id) {
-        // Cascading deletes should handle related attribute_values and product_variation_attributes
-        $this->db->query('DELETE FROM attributes WHERE id = :id');
-        $this->db->bind(':id', (int)$id);
-        return $this->db->execute();
+    public function deleteAttribute($attribute_id) {
+        $attribute_id = (int)$attribute_id;
+        if (method_exists($this->db, 'beginTransaction')) {
+            $this->db->beginTransaction();
+        }
+        try {
+            $this->db->query("DELETE FROM product_attribute_values WHERE attribute_id = :attribute_id");
+            $this->db->bind(':attribute_id', $attribute_id);
+            $this->db->execute();
+
+            $this->db->query("DELETE FROM product_configurable_attributes WHERE attribute_id = :attribute_id");
+            $this->db->bind(':attribute_id', $attribute_id);
+            $this->db->execute();
+
+            $this->db->query("DELETE FROM product_variation_attributes WHERE attribute_id = :attribute_id");
+            $this->db->bind(':attribute_id', $attribute_id);
+            $this->db->execute();
+
+            $this->db->query("DELETE FROM product_attributes WHERE id = :id");
+            $this->db->bind(':id', $attribute_id);
+            if (!$this->db->execute()) {
+                if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+                return false;
+            }
+
+            if (method_exists($this->db, 'commit')) $this->db->commit();
+            return true;
+
+        } catch (Exception $e) {
+            if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+            error_log("Error in ProductAttributeModel::deleteAttribute: " . $e->getMessage());
+            return false;
+        }
     }
 
-    // --- Attribute Value Methods ---
-
+    // --- Attribute Value Management ---
     public function getValuesByAttributeId($attribute_id) {
-        $this->db->query("SELECT * FROM attribute_values WHERE attribute_id = :attribute_id ORDER BY value ASC");
+        $this->db->query("SELECT * FROM product_attribute_values WHERE attribute_id = :attribute_id ORDER BY value ASC");
         $this->db->bind(':attribute_id', (int)$attribute_id);
-        $results = $this->db->resultSet();
-        return $results ? $results : [];
+        return $this->db->resultSet() ?: [];
     }
 
     public function getAttributeValueById($value_id) {
-        $this->db->query("SELECT * FROM attribute_values WHERE id = :id");
+        $this->db->query("SELECT * FROM product_attribute_values WHERE id = :id");
         $this->db->bind(':id', (int)$value_id);
-        $row = $this->db->single();
-        return ($this->db->rowCount() > 0) ? $row : false;
+        return $this->db->single() ?: false;
     }
 
     public function addAttributeValue($data) {
-        try {
-            $this->db->query('INSERT INTO attribute_values (attribute_id, value) VALUES (:attribute_id, :value)');
-            $this->db->bind(':attribute_id', (int)$data['attribute_id']);
-            $this->db->bind(':value', $data['value']);
-            return $this->db->execute();
-        } catch (PDOException $e) {
-            if ($e->getCode() == '23000' || (isset($e->errorInfo[1]) && $e->errorInfo[1] == 1062)) { // Unique constraint violation
-                return false; 
-            }
-            error_log("Error in addAttributeValue: " . $e->getMessage());
-            return false;
+        $this->db->query("SELECT id FROM product_attribute_values WHERE attribute_id = :attribute_id AND value = :value");
+        $this->db->bind(':attribute_id', (int)$data['attribute_id']);
+        $this->db->bind(':value', $data['value']);
+        if ($this->db->single()) {
+            error_log("ProductAttributeModel::addAttributeValue - Duplicate value '{$data['value']}' for attribute_id '{$data['attribute_id']}'.");
+            return false; 
         }
+
+        $this->db->query("INSERT INTO product_attribute_values (attribute_id, value) VALUES (:attribute_id, :value)");
+        $this->db->bind(':attribute_id', (int)$data['attribute_id']);
+        $this->db->bind(':value', $data['value']);
+        if ($this->db->execute()) {
+            return $this->db->lastInsertId();
+        }
+        $db_error_info = $this->db->getErrorInfo();
+        error_log("ProductAttributeModel::addAttributeValue failed. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'Unknown DB error')));
+        return false;
     }
 
     public function updateAttributeValue($data) {
-         try {
-            $this->db->query('UPDATE attribute_values SET value = :value WHERE id = :id');
-            $this->db->bind(':id', (int)$data['id']);
-            $this->db->bind(':value', $data['value']);
-            return $this->db->execute();
-        } catch (PDOException $e) {
-            if ($e->getCode() == '23000' || (isset($e->errorInfo[1]) && $e->errorInfo[1] == 1062)) { // Unique constraint violation
-                return false;
-            }
-            error_log("Error in updateAttributeValue: " . $e->getMessage());
-            return false;
+        $this->db->query("SELECT id FROM product_attribute_values WHERE attribute_id = :attribute_id AND value = :value AND id != :id");
+        $this->db->bind(':attribute_id', (int)$data['attribute_id']);
+        $this->db->bind(':value', $data['value']);
+        $this->db->bind(':id', (int)$data['id']);
+        if ($this->db->single()) {
+            error_log("ProductAttributeModel::updateAttributeValue - Duplicate value '{$data['value']}' for attribute_id '{$data['attribute_id']}' when updating id '{$data['id']}'.");
+            return false; 
         }
-    }
 
-    public function deleteAttributeValue($value_id) {
-        // Cascading delete should handle product_variation_attributes if an attribute_value is deleted
-        $this->db->query('DELETE FROM attribute_values WHERE id = :id');
-        $this->db->bind(':id', (int)$value_id);
+        $this->db->query("UPDATE product_attribute_values SET value = :value WHERE id = :id");
+        $this->db->bind(':id', (int)$data['id']);
+        $this->db->bind(':value', $data['value']);
         return $this->db->execute();
     }
 
-    // --- Product Configurable Attribute Methods ---
+    public function deleteAttributeValue($value_id) {
+        $value_id = (int)$value_id;
+        $this->db->query("DELETE FROM product_attribute_values WHERE id = :id");
+        $this->db->bind(':id', $value_id);
+        return $this->db->execute();
+    }
+
+    // --- Product Configurable Attributes ---
+    public function setConfigurableAttributesForProduct($product_id, $attribute_ids) {
+        $product_id = (int)$product_id;
+        if (method_exists($this->db, 'beginTransaction')) {
+            $this->db->beginTransaction();
+        }
+        try {
+            $this->db->query("DELETE FROM product_configurable_attributes WHERE product_id = :product_id");
+            $this->db->bind(':product_id', $product_id);
+            $this->db->execute();
+
+            if (!empty($attribute_ids) && is_array($attribute_ids)) {
+                $this->db->query("INSERT INTO product_configurable_attributes (product_id, attribute_id) VALUES (:product_id, :attribute_id)");
+                foreach ($attribute_ids as $attribute_id) {
+                    if (is_numeric($attribute_id)) {
+                        $this->db->bind(':product_id', $product_id);
+                        $this->db->bind(':attribute_id', (int)$attribute_id);
+                        if (!$this->db->execute()) {
+                            // Log the specific error before throwing exception
+                            $db_error_info = $this->db->getErrorInfo();
+                            error_log("ProductAttributeModel::setConfigurableAttributesForProduct - Failed to insert link for product_id {$product_id}, attribute_id {$attribute_id}. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'Unknown')));
+                            throw new Exception("Failed to insert configurable attribute link.");
+                        }
+                    }
+                }
+            }
+            if (method_exists($this->db, 'commit')) $this->db->commit();
+            return true;
+        } catch (Exception $e) {
+            if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+            error_log("Error in ProductAttributeModel::setConfigurableAttributesForProduct: " . $e->getMessage());
+            return false;
+        }
+    }
 
     public function getConfigurableAttributesForProduct($product_id) {
         $this->db->query("SELECT attribute_id FROM product_configurable_attributes WHERE product_id = :product_id");
         $this->db->bind(':product_id', (int)$product_id);
         $results = $this->db->resultSet();
-        $attribute_ids = [];
-        if ($results) {
-            foreach ($results as $row) {
-                $attribute_ids[] = $row['attribute_id'];
-            }
-        }
-        return $attribute_ids;
+        return $results ? array_column($results, 'attribute_id') : [];
     }
     
     public function getConfigurableAttributeDetailsForProduct($product_id) {
-        $this->db->query("SELECT a.id, a.name 
-                          FROM product_configurable_attributes pca
-                          JOIN attributes a ON pca.attribute_id = a.id
-                          WHERE pca.product_id = :product_id ORDER BY a.name ASC");
+        $this->db->query("SELECT pa.id, pa.name 
+                          FROM product_attributes pa
+                          JOIN product_configurable_attributes pca ON pa.id = pca.attribute_id
+                          WHERE pca.product_id = :product_id
+                          ORDER BY pa.name ASC");
         $this->db->bind(':product_id', (int)$product_id);
         $attributes = $this->db->resultSet();
         if ($attributes) {
             foreach ($attributes as $key => $attribute) {
                 $attributes[$key]['values'] = $this->getValuesByAttributeId($attribute['id']);
             }
-            return $attributes;
         }
-        return [];
+        return $attributes ?: [];
     }
 
-    public function setConfigurableAttributesForProduct($product_id, $attribute_ids = []) {
-        try {
-            $this->db->query("DELETE FROM product_configurable_attributes WHERE product_id = :product_id");
-            $this->db->bind(':product_id', (int)$product_id);
-            $this->db->execute(); // It's okay if no rows are deleted
+    private function generateVariationSku($parent_product_id, $attributesData = []) {
+        $sku = 'VAR-' . $parent_product_id;
+        if (!empty($attributesData)) {
+            // Sort by attribute ID to ensure consistent SKU generation
+            ksort($attributesData); 
+            foreach ($attributesData as $attr_id => $val_id) {
+                $sku .= '-' . $attr_id . '-' . $val_id;
+            }
+        }
+        // Check if this SKU already exists
+        $this->db->query("SELECT id FROM product_variations WHERE sku = :sku");
+        $this->db->bind(':sku', $sku);
+        if($this->db->single()){
+            // If exists, append a unique suffix
+            $sku .= '-' . substr(uniqid(), -4);
+        }
+        return $sku;
+    }
 
-            if (!empty($attribute_ids)) {
-                foreach ($attribute_ids as $attribute_id) {
-                    if (empty($attribute_id) || !is_numeric($attribute_id)) continue;
-                    $this->db->query("INSERT INTO product_configurable_attributes (product_id, attribute_id) VALUES (:product_id, :attribute_id)");
-                    $this->db->bind(':product_id', (int)$product_id);
-                    $this->db->bind(':attribute_id', (int)$attribute_id);
-                    if (!$this->db->execute()) { 
-                        error_log("Error inserting into product_configurable_attributes for product_id: {$product_id}, attribute_id: {$attribute_id}");
-                        return false; 
+    // --- Product Variation Management ---
+    public function addVariation($data, $attributesData) {
+        if (empty($data['sku'])) {
+            $data['sku'] = $this->generateVariationSku($data['parent_product_id'], $attributesData);
+            error_log("ProductAttributeModel::addVariation - Generated SKU: {$data['sku']} for product_id: {$data['parent_product_id']}");
+        } else {
+             // Check if provided SKU is unique
+            $this->db->query("SELECT id FROM product_variations WHERE sku = :sku AND parent_product_id != :parent_product_id_for_check");
+            $this->db->bind(':sku', $data['sku']);
+            $this->db->bind(':parent_product_id_for_check', (int)$data['parent_product_id']); // Check SKU uniqueness across other products too if SKU is global
+            if($this->db->single()){
+                 error_log("ProductAttributeModel::addVariation - Provided SKU '{$data['sku']}' already exists.");
+                 return 'duplicate_sku';
+            }
+        }
+        
+        if (!empty($attributesData)) {
+            $existingVariation = $this->findVariationByAttributeCombination($data['parent_product_id'], $attributesData);
+            if ($existingVariation) {
+                error_log("ProductAttributeModel::addVariation - Duplicate attribute combination for product_id: {$data['parent_product_id']}");
+                return 'duplicate_combination'; 
+            }
+        }
+
+        if (method_exists($this->db, 'beginTransaction')) {
+            $this->db->beginTransaction();
+        }
+        try {
+            $this->db->query("INSERT INTO product_variations (parent_product_id, sku, price, stock_quantity, initial_stock_quantity, image_url, is_active) 
+                              VALUES (:parent_product_id, :sku, :price, :stock_quantity, :initial_stock_quantity, :image_url, :is_active)");
+            $this->db->bind(':parent_product_id', (int)$data['parent_product_id']);
+            $this->db->bind(':sku', $data['sku']);
+            $this->db->bind(':price', ($data['price'] !== null && $data['price'] !== '') ? (float)$data['price'] : null);
+            $this->db->bind(':stock_quantity', (int)$data['stock_quantity']);
+            $this->db->bind(':initial_stock_quantity', (int)($data['initial_stock_quantity'] ?? $data['stock_quantity']));
+            $this->db->bind(':image_url', $data['image_url']);
+            $this->db->bind(':is_active', (int)$data['is_active']);
+
+            if (!$this->db->execute()) {
+                $db_error_info = $this->db->getErrorInfo();
+                // Check for duplicate SKU error specifically
+                if (isset($db_error_info[1]) && $db_error_info[1] == 1062 && strpos($db_error_info[2], 'sku') !== false) {
+                     error_log("ProductAttributeModel::addVariation - Duplicate SKU '{$data['sku']}' on INSERT. DB Error: " . implode(" | ", $db_error_info));
+                     throw new Exception("Duplicate SKU", 23001); // Custom code for duplicate SKU
+                }
+                throw new Exception("Failed to insert product_variation. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'Unknown')));
+            }
+            $variation_id = $this->db->lastInsertId();
+
+            if (!empty($attributesData) && is_array($attributesData)) {
+                $this->db->query("INSERT INTO product_variation_attributes (variation_id, attribute_id, attribute_value_id) 
+                                  VALUES (:variation_id, :attribute_id, :attribute_value_id)");
+                foreach ($attributesData as $attribute_id => $attribute_value_id) {
+                    if (is_numeric($attribute_id) && is_numeric($attribute_value_id)) {
+                        $this->db->bind(':variation_id', $variation_id);
+                        $this->db->bind(':attribute_id', (int)$attribute_id);
+                        $this->db->bind(':attribute_value_id', (int)$attribute_value_id);
+                        if (!$this->db->execute()) {
+                            throw new Exception("Failed to insert product_variation_attribute link.");
+                        }
                     }
                 }
             }
-            return true;
+            if (method_exists($this->db, 'commit')) $this->db->commit();
+            return $variation_id;
         } catch (Exception $e) {
-            error_log("Error in setConfigurableAttributesForProduct: " . $e->getMessage());
-            return false;
+            if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+            error_log("Error in ProductAttributeModel::addVariation: " . $e->getMessage());
+            if ($e->getCode() === 23001 || ($e->getCode() === '23000' && strpos(strtolower($e->getMessage()), 'duplicate entry') !== false && strpos(strtolower($e->getMessage()), 'sku') !== false)) {
+                 return 'duplicate_sku';
+            }
+            return $e->getCode() === '23000' ? 'db_error_duplicate' : 'general_exception';
         }
     }
     
-    // --- Product Variation Methods ---
+    public function findVariationByAttributeCombination($parent_product_id, $attributesData) {
+        if (empty($attributesData)) return false;
 
-    public function getSalesCountForVariation($variation_id) {
-        // Ensure order_items table has variation_id and orders table has order_status
-        $this->db->query("SELECT SUM(oi.quantity) as total_sold 
-                          FROM order_items oi
-                          JOIN orders o ON oi.order_id = o.id
-                          WHERE oi.variation_id = :variation_id
-                          AND o.order_status NOT IN ('cancelled', 'refunded', 'pending_confirmation')"); // Filter by relevant order statuses
-        $this->db->bind(':variation_id', (int)$variation_id);
-        $result = $this->db->single();
-        return $result && isset($result['total_sold']) ? (int)$result['total_sold'] : 0;
+        $parent_product_id = (int)$parent_product_id;
+        $params = [':parent_product_id' => $parent_product_id];
+        $attribute_count = count($attributesData);
+        
+        $joins_and_conditions = "";
+        $i = 0;
+        foreach ($attributesData as $attr_id => $val_id) {
+            $i++;
+            $alias = "pva" . $i;
+            $joins_and_conditions .= " JOIN product_variation_attributes {$alias} ON pv.id = {$alias}.variation_id 
+                                       AND {$alias}.attribute_id = :attr_id_{$i} 
+                                       AND {$alias}.attribute_value_id = :val_id_{$i} ";
+            $params[":attr_id_{$i}"] = (int)$attr_id;
+            $params[":val_id_{$i}"] = (int)$val_id;
+        }
+
+        $sql = "SELECT pv.id
+                FROM product_variations pv
+                {$joins_and_conditions}
+                WHERE pv.parent_product_id = :parent_product_id
+                AND (SELECT COUNT(*) FROM product_variation_attributes WHERE variation_id = pv.id) = :expected_attr_count";
+        
+        $params[':expected_attr_count'] = $attribute_count;
+        
+        $this->db->query($sql);
+        foreach ($params as $key => $value) {
+            $this->db->bind($key, $value);
+        }
+        return $this->db->single() ?: false;
     }
 
     public function getVariationsForProduct($parent_product_id) {
-        $this->db->query("SELECT id, sku, price, stock_quantity, initial_stock_quantity, image_url, is_active 
-                          FROM product_variations 
-                          WHERE parent_product_id = :parent_product_id ORDER BY id ASC");
-        $this->db->bind(':parent_product_id', (int)$parent_product_id);
+        $parent_product_id = (int)$parent_product_id;
+        $this->db->query("SELECT * FROM product_variations WHERE parent_product_id = :parent_product_id ORDER BY id ASC");
+        $this->db->bind(':parent_product_id', $parent_product_id);
         $variations = $this->db->resultSet();
 
         if ($variations) {
             foreach ($variations as $key => $variation) {
-                // Get attributes for this variation
                 $this->db->query("SELECT pva.attribute_id, pva.attribute_value_id, 
-                                         a.name as attribute_name, av.value as attribute_value
+                                         pa.name as attribute_name, pav.value as attribute_value 
                                   FROM product_variation_attributes pva
-                                  JOIN attributes a ON pva.attribute_id = a.id
-                                  JOIN attribute_values av ON pva.attribute_value_id = av.id
-                                  WHERE pva.product_variation_id = :variation_id ORDER BY a.name ASC");
+                                  JOIN product_attributes pa ON pva.attribute_id = pa.id
+                                  JOIN product_attribute_values pav ON pva.attribute_value_id = pav.id
+                                  WHERE pva.variation_id = :variation_id");
                 $this->db->bind(':variation_id', $variation['id']);
                 $variations[$key]['attributes'] = $this->db->resultSet() ?: [];
-                
-                // Add sales count and remaining stock for each variation
-                $variations[$key]['sales_count'] = $this->getSalesCountForVariation($variation['id']);
-                
-                $current_variation_stock = isset($variation['stock_quantity']) ? (int)$variation['stock_quantity'] : 0;
-                $variations[$key]['current_stock_quantity'] = $current_variation_stock; 
-                
-                $initial_variation_stock = isset($variation['initial_stock_quantity']) ? (int)$variation['initial_stock_quantity'] : 0;
-                // remaining_stock_from_initial is based on initial stock
-                $variations[$key]['remaining_stock_from_initial'] = $initial_variation_stock - $variations[$key]['sales_count'];
-                if ($variations[$key]['remaining_stock_from_initial'] < 0) {
-                    $variations[$key]['remaining_stock_from_initial'] = 0;
-                }
             }
         }
-        return $variations ? $variations : [];
+        return $variations ?: [];
     }
-
+    
     public function getVariationById($variation_id) {
-        $this->db->query("SELECT * FROM product_variations WHERE id = :id");
-        $this->db->bind(':id', (int)$variation_id);
+        $variation_id = (int)$variation_id;
+        $this->db->query("SELECT pv.*, 
+                                 p.name as parent_product_name, 
+                                 p.affiliate_commission_type as parent_affiliate_commission_type, 
+                                 p.affiliate_commission_value as parent_affiliate_commission_value 
+                          FROM product_variations pv
+                          JOIN products p ON pv.parent_product_id = p.id
+                          WHERE pv.id = :variation_id");
+        $this->db->bind(':variation_id', $variation_id);
         $variation = $this->db->single();
+
         if ($variation) {
             $this->db->query("SELECT pva.attribute_id, pva.attribute_value_id, 
-                                     a.name as attribute_name, av.value as attribute_value
+                                     pa.name as attribute_name, pav.value as attribute_value 
                               FROM product_variation_attributes pva
-                              JOIN attributes a ON pva.attribute_id = a.id
-                              JOIN attribute_values av ON pva.attribute_value_id = av.id
-                              WHERE pva.product_variation_id = :variation_id ORDER BY a.name ASC");
+                              JOIN product_attributes pa ON pva.attribute_id = pa.id
+                              JOIN product_attribute_values pav ON pva.attribute_value_id = pav.id
+                              WHERE pva.variation_id = :variation_id");
             $this->db->bind(':variation_id', $variation['id']);
             $variation['attributes'] = $this->db->resultSet() ?: [];
-            return $variation;
         }
-        return false;
+        return $variation ?: false;
     }
 
-    public function addVariation($data, $attributesData) {
-        // 1. Check for duplicate attribute combination for this parent product
-        $existingVariations = $this->getVariationsForProduct((int)$data['parent_product_id']);
-        if ($existingVariations && !empty($attributesData)) {
-            foreach ($existingVariations as $existingVariation) {
-                if (isset($existingVariation['attributes']) && count($existingVariation['attributes']) == count($attributesData)) {
-                    $existing_attrs_map = []; 
-                    foreach($existingVariation['attributes'] as $ex_attr) { 
-                        $existing_attrs_map[(int)$ex_attr['attribute_id']] = (int)$ex_attr['attribute_value_id']; 
-                    }
-                    $new_attrs_map = []; 
-                    foreach ($attributesData as $new_attr_id => $new_val_id) { 
-                        $new_attrs_map[(int)$new_attr_id] = (int)$new_val_id; 
-                    }
-                    ksort($existing_attrs_map); 
-                    ksort($new_attrs_map);
-                    if ($existing_attrs_map === $new_attrs_map) {
-                        error_log("Duplicate variation attempt for parent_product_id: " . $data['parent_product_id'] . " with attributes: " . json_encode($attributesData));
-                        return 'duplicate_combination'; 
-                    }
+    public function updateVariation($variation_id, $data, $attributesData = null) {
+        $variation_id = (int)$variation_id;
+        
+        if (empty($data['sku'])) {
+            // If SKU is being emptied, generate one. Or decide if empty SKU is allowed on update.
+            // For now, let's assume if it's empty, it means it should be NULL or auto-generated if that's the policy.
+            // If SKU must be unique and is emptied, it might be set to NULL if DB allows.
+            // If you want to auto-generate on empty during update, add that logic here.
+            // $data['sku'] = $this->generateVariationSku($data['parent_product_id'], $attributesData);
+        } else {
+            // Check if provided SKU is unique (excluding current variation)
+            $this->db->query("SELECT id FROM product_variations WHERE sku = :sku AND id != :variation_id");
+            $this->db->bind(':sku', $data['sku']);
+            $this->db->bind(':variation_id', $variation_id);
+            if($this->db->single()){
+                 error_log("ProductAttributeModel::updateVariation - Provided SKU '{$data['sku']}' already exists for another variation.");
+                 return 'duplicate_sku';
+            }
+        }
+
+        if (!empty($attributesData)) {
+            $parent_product_id_result = $this->db->query("SELECT parent_product_id FROM product_variations WHERE id = :vid");
+            $this->db->bind(':vid', $variation_id);
+            $parent_info = $this->db->single();
+            if ($parent_info && isset($parent_info['parent_product_id'])) {
+                $existingVariation = $this->findVariationByAttributeCombination($parent_info['parent_product_id'], $attributesData);
+                if ($existingVariation && (int)$existingVariation['id'] !== $variation_id) {
+                    error_log("ProductAttributeModel::updateVariation - Duplicate attribute combination for variation_id: {$variation_id}");
+                    return 'duplicate_combination';
                 }
             }
         }
 
-        // 2. Insert new variation
-        try {
-            $this->db->query("INSERT INTO product_variations (parent_product_id, sku, price, stock_quantity, initial_stock_quantity, image_url, is_active)
-                              VALUES (:parent_product_id, :sku, :price, :stock_quantity, :initial_stock_quantity, :image_url, :is_active)");
-            $this->db->bind(':parent_product_id', (int)$data['parent_product_id']);
-            $this->db->bind(':sku', !empty($data['sku']) ? $data['sku'] : null);
-            $this->db->bind(':price', !empty($data['price']) ? (float)$data['price'] : null);
-            $stock_qty_var = isset($data['stock_quantity']) ? (int)$data['stock_quantity'] : 0;
-            $this->db->bind(':stock_quantity', $stock_qty_var);
-            // Initial stock is same as current stock at creation for variation
-            $this->db->bind(':initial_stock_quantity', isset($data['initial_stock_quantity']) ? (int)$data['initial_stock_quantity'] : $stock_qty_var); 
-            $this->db->bind(':image_url', !empty($data['image_url']) ? $data['image_url'] : null);
-            $this->db->bind(':is_active', isset($data['is_active']) ? (int)$data['is_active'] : 1);
-
-            if (!$this->db->execute()) {
-                error_log("Failed to insert into product_variations. DB Error: " . (isset($this->db->dbh) ? implode(' | ', $this->db->dbh->errorInfo()) : "DB handler not available"));
-                return 'db_error_variation_insert';
-            }
-            $variation_id = $this->db->lastInsertId();
-            if (!$variation_id) {
-                error_log("Failed to get lastInsertId after inserting into product_variations.");
-                return 'db_error_variation_id';
-            }
-
-            if (!empty($attributesData)) {
-                foreach ($attributesData as $attribute_id => $attribute_value_id) {
-                    if (empty($attribute_id) || !is_numeric($attribute_id) || empty($attribute_value_id) || !is_numeric($attribute_value_id)) {
-                        error_log("Invalid attribute_id or attribute_value_id for variation_id: {$variation_id}. AttrID: {$attribute_id}, ValID: {$attribute_value_id}");
-                        continue; 
-                    }
-                    $this->db->query("INSERT INTO product_variation_attributes (product_variation_id, attribute_id, attribute_value_id)
-                                      VALUES (:variation_id, :attribute_id, :attribute_value_id)");
-                    $this->db->bind(':variation_id', $variation_id);
-                    $this->db->bind(':attribute_id', (int)$attribute_id);
-                    $this->db->bind(':attribute_value_id', (int)$attribute_value_id);
-                    if (!$this->db->execute()) {
-                        error_log("Failed to insert into product_variation_attributes for var_id: {$variation_id}. DB Error: " . (isset($this->db->dbh) ? implode(' | ', $this->db->dbh->errorInfo()) : "DB handler not available"));
-                        $this->deleteVariation($variation_id); // Attempt to delete the incomplete variation
-                        return 'db_error_attribute_insert';
-                    }
-                }
-            }
-            return (int)$variation_id;
-        } catch (PDOException $e) {
-            error_log("PDOException in addVariation: " . $e->getMessage());
-            return 'pdo_exception';
-        } catch (Exception $e) {
-            error_log("General Exception in addVariation: " . $e->getMessage());
-            return 'general_exception';
+        if (method_exists($this->db, 'beginTransaction')) {
+            $this->db->beginTransaction();
         }
-    }
-
-    public function updateVariation($variation_id, $data) { // attributesData is not used to change defining attributes
         try {
-            $sql = "UPDATE product_variations SET
-                        sku = :sku, 
-                        price = :price, 
-                        stock_quantity = :stock_quantity,
-                        image_url = :image_url, 
-                        is_active = :is_active";
-            
-            // Only update initial_stock_quantity if it's explicitly provided for edit
-            if (isset($data['initial_stock_quantity'])) { 
+            $sql = "UPDATE product_variations SET sku = :sku, price = :price, stock_quantity = :stock_quantity, 
+                    image_url = :image_url, is_active = :is_active";
+            if (isset($data['initial_stock_quantity'])) { // Only update if provided
                  $sql .= ", initial_stock_quantity = :initial_stock_quantity";
             }
             $sql .= " WHERE id = :variation_id";
-            $this->db->query($sql);
-            
-            $this->db->bind(':variation_id', (int)$variation_id);
-            $this->db->bind(':sku', !empty($data['sku']) ? $data['sku'] : null);
-            $this->db->bind(':price', !empty($data['price']) ? (float)$data['price'] : null);
-            $this->db->bind(':stock_quantity', (int)$data['stock_quantity']);
-            if (isset($data['initial_stock_quantity'])) {
-               $this->db->bind(':initial_stock_quantity', (int)$data['initial_stock_quantity']);
-            }
-            $this->db->bind(':image_url', !empty($data['image_url']) ? $data['image_url'] : null);
-            $this->db->bind(':is_active', isset($data['is_active']) ? (int)$data['is_active'] : 1);
 
-            if (!$this->db->execute()) { 
-                error_log("Failed to update product_variations for var_id: {$variation_id}. DB Error: " . (isset($this->db->dbh) ? implode(' | ', $this->db->dbh->errorInfo()) : "DB handler not available"));
-                return false; 
+            $this->db->query($sql);
+            $this->db->bind(':variation_id', $variation_id);
+            $this->db->bind(':sku', $data['sku'] ?: null, PDO::PARAM_STR_OR_NULL); // Allow NULL for SKU
+            $this->db->bind(':price', ($data['price'] !== null && $data['price'] !== '') ? (float)$data['price'] : null);
+            $this->db->bind(':stock_quantity', (int)$data['stock_quantity']);
+            $this->db->bind(':image_url', $data['image_url'] ?: null, PDO::PARAM_STR_OR_NULL);
+            $this->db->bind(':is_active', (int)$data['is_active']);
+            if (isset($data['initial_stock_quantity'])) {
+                $this->db->bind(':initial_stock_quantity', (int)$data['initial_stock_quantity']);
             }
-            // Defining attributes of a variation (product_variation_attributes) are not updated here.
-            // If they need to change, the variation should be deleted and a new one created.
+
+            if (!$this->db->execute()) {
+                $db_error_info = $this->db->getErrorInfo();
+                 if (isset($db_error_info[1]) && $db_error_info[1] == 1062 && strpos($db_error_info[2], 'sku') !== false) {
+                     error_log("ProductAttributeModel::updateVariation - Duplicate SKU '{$data['sku']}' on UPDATE. DB Error: " . implode(" | ", $db_error_info));
+                     throw new Exception("Duplicate SKU", 23001); 
+                }
+                throw new Exception("Failed to update product_variation. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'Unknown')));
+            }
+
+            if ($attributesData !== null && is_array($attributesData)) { 
+                $this->db->query("DELETE FROM product_variation_attributes WHERE variation_id = :variation_id");
+                $this->db->bind(':variation_id', $variation_id);
+                $this->db->execute();
+
+                if (!empty($attributesData)) {
+                    $this->db->query("INSERT INTO product_variation_attributes (variation_id, attribute_id, attribute_value_id) 
+                                      VALUES (:variation_id, :attribute_id, :attribute_value_id)");
+                    foreach ($attributesData as $attribute_id => $attribute_value_id) {
+                         if (is_numeric($attribute_id) && is_numeric($attribute_value_id)) {
+                            $this->db->bind(':variation_id', $variation_id);
+                            $this->db->bind(':attribute_id', (int)$attribute_id);
+                            $this->db->bind(':attribute_value_id', (int)$attribute_value_id);
+                            if (!$this->db->execute()) {
+                                throw new Exception("Failed to update product_variation_attribute links.");
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (method_exists($this->db, 'commit')) $this->db->commit();
             return true;
         } catch (Exception $e) {
-            error_log("Error in updateVariation (model): " . $e->getMessage());
-            return false;
+            if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+            error_log("Error in ProductAttributeModel::updateVariation: " . $e->getMessage());
+            if ($e->getCode() === 23001 || ($e->getCode() === '23000' && strpos(strtolower($e->getMessage()), 'duplicate entry') !== false && strpos(strtolower($e->getMessage()), 'sku') !== false)) {
+                 return 'duplicate_sku';
+            }
+            return $e->getCode() === '23000' ? 'db_error_duplicate' : 'general_exception';
         }
     }
 
     public function deleteVariation($variation_id) {
-        $this->db->query("DELETE FROM product_variations WHERE id = :variation_id");
-        $this->db->bind(':variation_id', (int)$variation_id);
-        // Cascading delete should handle product_variation_attributes
-        if ($this->db->execute()){
-            return $this->db->rowCount() > 0;
+        $variation_id = (int)$variation_id;
+        if (method_exists($this->db, 'beginTransaction')) {
+            $this->db->beginTransaction();
         }
-        error_log("Error in deleteVariation for var_id: {$variation_id}. DB Error: " . (isset($this->db->dbh) ? implode(' | ', $this->db->dbh->errorInfo()) : "DB handler not available"));
-        return false;
+        try {
+            $this->db->query("DELETE FROM product_variation_attributes WHERE variation_id = :variation_id");
+            $this->db->bind(':variation_id', $variation_id);
+            $this->db->execute();
+
+            $this->db->query("DELETE FROM product_variations WHERE id = :variation_id");
+            $this->db->bind(':variation_id', $variation_id);
+            if (!$this->db->execute()) {
+                throw new Exception("Failed to delete product_variation.");
+            }
+
+            if (method_exists($this->db, 'commit')) $this->db->commit();
+            return true;
+        } catch (Exception $e) {
+            if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+            error_log("Error in ProductAttributeModel::deleteVariation: " . $e->getMessage());
+            return false;
+        }
     }
     
     public function decreaseVariationStock($variation_id, $quantity_to_decrease) {
         $variation_id = (int)$variation_id;
         $quantity_to_decrease = (int)$quantity_to_decrease;
-        error_log("ProductAttributeModel::decreaseVariationStock called for variation_id: {$variation_id}, quantity: {$quantity_to_decrease}");
-        
+
+        error_log("ProductAttributeModel::decreaseVariationStock for variation_id: {$variation_id}, quantity: {$quantity_to_decrease}");
+
         $this->db->query("SELECT stock_quantity FROM product_variations WHERE id = :id");
         $this->db->bind(':id', $variation_id);
         $variation_stock_data = $this->db->single();
 
         if ($variation_stock_data && (int)$variation_stock_data['stock_quantity'] >= $quantity_to_decrease) {
-            $this->db->query("UPDATE product_variations 
-                              SET stock_quantity = stock_quantity - :quantity 
+            $this->db->query("UPDATE product_variations SET stock_quantity = stock_quantity - :quantity 
                               WHERE id = :id AND stock_quantity >= :quantity_check");
             $this->db->bind(':quantity', $quantity_to_decrease);
             $this->db->bind(':id', $variation_id);
-            $this->db->bind(':quantity_check', $quantity_to_decrease);
-
+            $this->db->bind(':quantity_check', $quantity_to_decrease); 
+            
             if ($this->db->execute()) {
-                $rowCount = $this->db->rowCount();
-                error_log("ProductAttributeModel::decreaseVariationStock - UPDATE executed. Rows affected: {$rowCount} for var_id: {$variation_id}");
-                return $rowCount > 0;
+                error_log("ProductAttributeModel::decreaseVariationStock - UPDATE executed. Rows affected: " . $this->db->rowCount() . " for variation_id: {$variation_id}");
+                return $this->db->rowCount() > 0;
             } else {
-                error_log("ProductAttributeModel::decreaseVariationStock - UPDATE failed for var_id: {$variation_id}. DB Error: " . (isset($this->db->dbh) ? implode(' | ', $this->db->dbh->errorInfo()) : "DB handler not available"));
-                return false;
+                 $db_error_info = $this->db->getErrorInfo();
+                 error_log("ProductAttributeModel::decreaseVariationStock - UPDATE failed for variation_id: {$variation_id}. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'Unknown DB error')));
             }
-        } else { 
+        } else {
             if (!$variation_stock_data) {
                 error_log("ProductAttributeModel::decreaseVariationStock - Variation not found for id: {$variation_id}");
             } else {
-                error_log("ProductAttributeModel::decreaseVariationStock - Not enough stock for var_id: {$variation_id}. Current: {$variation_stock_data['stock_quantity']}, Requested: {$quantity_to_decrease}");
+                error_log("ProductAttributeModel::decreaseVariationStock - Not enough stock for variation_id: {$variation_id}. Current: {$variation_stock_data['stock_quantity']}, Requested: {$quantity_to_decrease}");
             }
-            return false; 
         }
-    }
-
-    public function deleteAllVariationsForProduct($parent_product_id) {
-        $this->db->query("DELETE FROM product_variations WHERE parent_product_id = :parent_product_id");
-        $this->db->bind(':parent_product_id', (int)$parent_product_id);
-        // Cascading delete will handle product_variation_attributes
-        return $this->db->execute();
+        return false;
     }
 }
-// تگ پایانی PHP را حذف کنید
+?>

@@ -28,16 +28,11 @@ if (session_status() == PHP_SESSION_NONE) {
     session_start();
 }
 
+
 // بارگذاری فایل‌های پیکربندی، کمکی و هسته اصلی برنامه
-require_once '../config/database.php';   // تنظیمات پایگاه داده و BASE_URL
+require_once '../config/config.php'; // <--- این خط بسیار مهم است
 require_once '../app/helpers/session_helper.php'; 
 require_once '../app/helpers/jalali_helper.php'; // اگر تابع شمسی‌ساز را اینجا require می‌کنید
-
-// فایل‌های هسته مربوط به معماری MVC مانند ما
-require_once '../app/core/Database.php';   
-require_once '../app/core/Controller.php'; 
-require_once '../app/core/Router.php';     
-
 $router = new Router();
 
 // بارگذاری فایل‌های پیکربندی، کمکی و هسته اصلی برنامه
@@ -54,6 +49,12 @@ require_once '../app/helpers/session_helper.php';
 require_once '../app/helpers/jalali_helper.php'; // <<-- اضافه کردن این خط
 // ...
 
+// public/index.php (یا فایل bootstrap شما)
+// ...
+require_once '../app/helpers/session_helper.php';
+require_once '../app/helpers/jalali_helper.php'; // یا jdf.php
+require_once '../app/helpers/status_helper.php'; // <--- این خط را اضافه کنید
+// ...
 
     // === رهگیری کد همکاری در فروش ===
     if (isset($_GET['ref']) && !empty($_GET['ref'])) {

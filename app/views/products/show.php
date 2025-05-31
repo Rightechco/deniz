@@ -1,210 +1,368 @@
-    <?php // ویو: app/views/products/show.php ?>
+<?php 
+// app/views/products/show.php
+if (!defined('APPROOT')) { define('APPROOT', dirname(dirname(dirname(__FILE__)))); }
+require_once(__DIR__ . '/../layouts/header.php');
+?>
 
-    <div style="display: flex; flex-wrap: wrap; gap: 20px;">
-        <section style="flex-grow: 1; width: 100%;">
-            <h1><?php echo htmlspecialchars(isset($data['pageTitle']) ? $data['pageTitle'] : 'جزئیات محصول'); ?></h1>
+<div class="container mx-auto px-4 py-8 lg:py-12 font-vazir">
+    <?php flash('product_error'); ?>
+    <?php if (isset($data['product']) && $data['product']): ?>
+        <?php $product = $data['product']; ?>
+        <nav aria-label="Breadcrumb" class="mb-6 text-sm text-gray-500">
+            <ol class="list-none p-0 inline-flex space-x-2 space-x-reverse">
+                <li class="flex items-center">
+                    <a href="<?php echo BASE_URL; ?>" class="hover:text-primary transition-colors">صفحه اصلی</a>
+                    <i class="fas fa-angle-left mx-2 text-gray-400"></i>
+                </li>
+                <li class="flex items-center">
+                    <a href="<?php echo BASE_URL; ?>products" class="hover:text-primary transition-colors">فروشگاه</a>
+                    <?php if (isset($product['category_id']) && isset($product['category_name'])): ?>
+                        <i class="fas fa-angle-left mx-2 text-gray-400"></i>
+                    <?php endif; ?>
+                </li>
+                <?php if (isset($product['category_id']) && isset($product['category_name'])): ?>
+                <li class="flex items-center">
+                    <a href="<?php echo BASE_URL . 'products/category/' . ($product['category_slug'] ?? $product['category_id']); ?>" class="hover:text-primary transition-colors">
+                        <?php echo htmlspecialchars($product['category_name']); ?>
+                    </a>
+                     <i class="fas fa-angle-left mx-2 text-gray-400"></i>
+                </li>
+                <?php endif; ?>
+                <li class="text-neutral-dark font-medium" aria-current="page"><?php echo htmlspecialchars($product['name']); ?></li>
+            </ol>
+        </nav>
 
-            <?php 
-            flash('cart_action_success'); 
-            flash('cart_action_fail'); 
-            flash('error_message');
-            ?>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12">
+            <div class="product-gallery">
+                <div class="bg-white rounded-xl shadow-xl p-4 sticky top-24">
+                    <div class="mb-4 h-80 md:h-96 lg:h-[500px] flex items-center justify-center overflow-hidden rounded-lg bg-gray-100">
+                        <img id="mainProductImage" 
+                             src="<?php echo !empty($product['image_url']) ? BASE_URL . htmlspecialchars($product['image_url']) : 'https://placehold.co/600x600/e2e8f0/333?text=' . urlencode($product['name']); ?>" 
+                             alt="<?php echo htmlspecialchars($product['name']); ?>" 
+                             class="max-w-full max-h-full object-contain transition-opacity duration-300 ease-in-out cursor-zoom-in"
+                             onclick="openImageModal(this.src)">
+                    </div>
+                    <?php 
+                    $gallery_items = [];
+                    if (!empty($product['image_url'])) {
+                        $gallery_items[] = ['full_url' => BASE_URL . htmlspecialchars($product['image_url']), 'alt_text' => 'تصویر اصلی - ' . htmlspecialchars($product['name'])];
+                    }
+                    if (isset($data['gallery_images']) && !empty($data['gallery_images'])) {
+                        foreach ($data['gallery_images'] as $g_img) {
+                            $gallery_items[] = [
+                                'full_url' => $g_img['full_url'] ?? (BASE_URL . ($g_img['image_path'] ?? 'images/placeholder.png')),
+                                'alt_text' => $g_img['alt_text'] ?? $product['name']
+                            ];
+                        }
+                    }
+                    ?>
+                    <?php if (count($gallery_items) > 1): ?>
+                        <div class="swiper thumbnail-slider" style="padding-bottom: 30px;">
+                             <div class="swiper-wrapper">
+                                <?php foreach ($gallery_items as $index => $galleryItem): ?>
+                                    <div class="swiper-slide p-1">
+                                        <img src="<?php echo htmlspecialchars($galleryItem['full_url']); ?>" 
+                                             alt="<?php echo htmlspecialchars($galleryItem['alt_text']); ?>" 
+                                             class="w-full h-20 object-cover rounded-md cursor-pointer border-2 border-transparent hover:border-primary transition-all gallery-thumbnail <?php echo ($index === 0 && !empty($product['image_url'])) ? 'active-thumbnail' : ''; ?>"
+                                             onclick="changeMainImage('<?php echo htmlspecialchars($galleryItem['full_url']); ?>', this)">
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="swiper-button-next-thumb text-xs !text-gray-500 hover:!text-primary"></div>
+                            <div class="swiper-button-prev-thumb text-xs !text-gray-500 hover:!text-primary"></div>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
 
-            <?php if (isset($data['product']) && $data['product']): ?>
-                <div class="product-detail" style="display: flex; flex-wrap: wrap; gap: 30px; background-color: #fff; padding: 20px; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.1);">
-                    <div class="product-image" style="flex: 1; min-width: 280px; text-align:center;">
-                        <?php
-                        $default_product_image_path = !empty($data['product']['image_url']) ? BASE_URL . htmlspecialchars($data['product']['image_url']) : BASE_URL . 'images/placeholder.png';
-                        $default_product_alt_text = !empty($data['product']['image_url']) ? htmlspecialchars($data['product']['name']) : 'تصویر محصول';
+            <div>
+                <div class="bg-white rounded-xl shadow-xl p-6 md:p-8">
+                    <h1 class="text-2xl md:text-3xl font-bold text-neutral-darkest mb-2"><?php echo htmlspecialchars($product['name']); ?></h1>
+                    
+                    <div class="flex items-center space-x-2 space-x-reverse text-sm text-gray-500 mb-4">
+                        <?php if (isset($product['category_name']) && !empty($product['category_name'])): ?>
+                            <a href="<?php echo BASE_URL . 'products/category/' . ($product['category_slug'] ?? $product['category_id']); ?>" class="hover:text-primary">
+                                <i class="fas fa-tag mr-1"></i> <?php echo htmlspecialchars($product['category_name']); ?>
+                            </a>
+                            <span>&bull;</span>
+                        <?php endif; ?>
+                        <?php // نمایش نام فروشنده
+                        $vendor_name_display = 'فروشگاه اصلی'; // پیش‌فرض
+                        if (isset($product['vendor_id']) && $product['vendor_id']) {
+                            if (isset($product['vendor_full_name']) && !empty(trim($product['vendor_full_name']))) {
+                                $vendor_name_display = $product['vendor_full_name'];
+                            } elseif (isset($product['vendor_username']) && !empty($product['vendor_username'])) {
+                                $vendor_name_display = $product['vendor_username'];
+                            }
+                        }
                         ?>
-                        <img id="main_product_image" src="<?php echo $default_product_image_path; ?>" alt="<?php echo $default_product_alt_text; ?>" style="max-width: 100%; height: auto; max-height: 400px; border-radius: 5px; border: 1px solid #eee;">
+                        <span>فروشنده: <a href="#" class="hover:text-primary"><?php echo htmlspecialchars($vendor_name_display); ?></a></span>
                     </div>
 
-                    <div class="product-info" style="flex: 2; min-width: 300px;">
-                        <p style="font-size: 1.1em; color: #555;">
-                            دسته: 
-                            <?php if (isset($data['product']['category_id']) && isset($data['product']['category_name'])): ?>
-                                <a href="<?php echo BASE_URL; ?>products/category/<?php echo $data['product']['category_id']; ?>" style="text-decoration:none; color: #007bff;">
-                                    <?php echo htmlspecialchars($data['product']['category_name']); ?>
-                                </a>
-                            <?php else: ?>
-                                <em>بدون دسته</em>
-                            <?php endif; ?>
-                        </p>
-                        
-                        <?php if (isset($data['product']['vendor_id']) && $data['product']['vendor_id']): ?>
-                            <p style="font-size: 1em; color: #555;">
-                                فروشنده: 
-                                <?php 
-                                $vendor_display_name_public = isset($data['product']['vendor_full_name']) && !empty(trim($data['product']['vendor_full_name'])) ? $data['product']['vendor_full_name'] : ($data['product']['vendor_username'] ?? 'فروشنده #' . $data['product']['vendor_id']);
-                                // لینک به صفحه فروشگاه فروشنده (در آینده)
-                                // echo '<a href="' . BASE_URL . 'store/' . $data['product']['vendor_id'] . '" style="text-decoration:none; color: #007bff;">' . htmlspecialchars($vendor_display_name_public) . '</a>';
-                                echo htmlspecialchars($vendor_display_name_public);
-                                ?>
+
+                    <div id="productPriceSection" class="mb-6">
+                         <?php if ($product['product_type'] == 'variable'): ?>
+                            <p class="text-3xl font-extrabold text-primary">
+                                <span id="dynamicProductPrice">
+                                    <small class="text-lg text-gray-500 font-medium">لطفاً گزینه‌ها را انتخاب کنید</small>
+                                </span>
                             </p>
                         <?php else: ?>
-                             <p style="font-size: 1em; color: #555;">فروشنده: فروشگاه <?php echo htmlspecialchars(defined('SITE_NAME') ? SITE_NAME : 'ما'); ?></p>
-                        <?php endif; ?>
-                        <hr>
-                        <p><strong>توضیحات:</strong><br><?php echo nl2br(htmlspecialchars(isset($data['product']['description']) ? $data['product']['description'] : '')); ?></p>
-                        
-                        <?php if (isset($data['product']['product_type']) && $data['product']['product_type'] == 'simple'): ?>
-                            <p id="simple_product_price_display" style="font-size: 1.5em; font-weight: bold; color: #d9534f; margin: 20px 0;">
-                                <?php 
-                                if (isset($data['product']['price']) && $data['product']['price'] !== null) {
-                                    echo htmlspecialchars(number_format((float)$data['product']['price'])) . ' تومان';
-                                } else { echo '---'; }
-                                ?>
+                            <p class="text-3xl font-extrabold text-primary">
+                                <?php echo (isset($product['price']) && $product['price'] > 0) ? number_format((float)$product['price']) . ' <span class="text-lg font-medium">تومان</span>' : 'تماس بگیرید'; ?>
                             </p>
-                            <p id="simple_product_stock_display" style="font-size: 1em; color: #777; margin-bottom:20px;">
-                                موجودی انبار: <?php echo htmlspecialchars(isset($data['product']['stock_quantity']) ? $data['product']['stock_quantity'] : '0'); ?> عدد
-                            </p>
-                            <?php if (isset($data['product']['stock_quantity']) && $data['product']['stock_quantity'] > 0): ?>
-                                <form action="<?php echo BASE_URL; ?>cart/add" method="post" style="margin-top: 20px;">
-                                    <input type="hidden" name="product_id" value="<?php echo $data['product']['id']; ?>">
-                                    <label for="quantity_<?php echo $data['product']['id']; ?>" style="margin-right: 10px;">تعداد:</label>
-                                    <input type="number" name="quantity" id="quantity_<?php echo $data['product']['id']; ?>" value="1" min="1" max="<?php echo htmlspecialchars($data['product']['stock_quantity']); ?>" style="width: 70px; padding: 8px; margin-right: 5px; border: 1px solid #ccc; border-radius: 4px;">
-                                    <button type="submit" class="button-link" style="background-color: #28a745; padding: 10px 20px;">افزودن به سبد خرید</button>
-                                </form>
-                            <?php else: ?>
-                                <p style="color: red; margin-top: 20px; font-weight: bold;">اتمام موجودی</p>
-                            <?php endif; ?>
-                        <?php elseif (isset($data['product']['product_type']) && $data['product']['product_type'] == 'variable'): ?>
-                            <form action="<?php echo BASE_URL; ?>cart/add" method="post" id="variable_product_form" style="margin-top: 20px;">
-                                <input type="hidden" name="product_id" value="<?php echo $data['product']['id']; ?>">
-                                <input type="hidden" name="variation_id" id="selected_variation_id" value="">
-                                <div id="product_attributes_options">
-                                    <?php if (!empty($data['product_configurable_attributes'])): ?>
-                                        <p><strong>گزینه‌ها را انتخاب کنید:</strong></p>
-                                        <?php foreach ($data['product_configurable_attributes'] as $attribute): ?>
-                                            <div class="attribute-selector-group" style="margin-bottom:15px;">
-                                                <label for="attr_<?php echo $attribute['id']; ?>" style="display:block; margin-bottom:5px; font-weight:bold;"><?php echo htmlspecialchars($attribute['name']); ?>:</label>
-                                                <select name="attributes[<?php echo $attribute['id']; ?>]" id="attr_<?php echo $attribute['id']; ?>" class="variation-attribute-select" data-attribute-id="<?php echo $attribute['id']; ?>" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;" required>
-                                                    <option value="">-- انتخاب <?php echo htmlspecialchars($attribute['name']); ?> --</option>
-                                                    <?php if (!empty($attribute['values'])): ?>
-                                                        <?php foreach ($attribute['values'] as $value_item): ?>
-                                                            <option value="<?php echo $value_item['id']; ?>"><?php echo htmlspecialchars($value_item['value']); ?></option>
-                                                        <?php endforeach; ?>
-                                                    <?php endif; ?>
-                                                </select>
-                                            </div>
-                                        <?php endforeach; ?>
-                                    <?php else: ?>
-                                        <p><em>این محصول متغیر هنوز ویژگی‌های قابل تنظیمی برای انتخاب ندارد.</em></p>
-                                    <?php endif; ?>
-                                </div>
-                                <div id="variation_price_display" style="font-size: 1.5em; font-weight: bold; color: #d9534f; margin: 20px 0; min-height: 1.5em;"></div>
-                                <div id="variation_stock_display" style="font-size: 1em; color: #777; margin-bottom:20px; min-height: 1em;"></div>
-                                <div id="add_to_cart_section_variable" style="visibility:hidden;"> 
-                                    <label for="quantity_variable_<?php echo $data['product']['id']; ?>" style="margin-right: 10px;">تعداد:</label>
-                                    <input type="number" name="quantity" id="quantity_variable_<?php echo $data['product']['id']; ?>" value="1" min="1" style="width: 70px; padding: 8px; margin-right: 5px; border: 1px solid #ccc; border-radius: 4px;">
-                                    <button type="submit" id="add_to_cart_variable_btn" class="button-link" style="background-color: #28a745; padding: 10px 20px;">افزودن به سبد خرید</button>
-                                </div>
-                                <p id="variation_message" style="color:red; margin-top:10px; min-height: 1.2em; font-weight:bold;"></p>
-                            </form>
-                            <?php if (empty($data['product_configurable_attributes']) && $data['product']['product_type'] == 'variable'): ?>
-                                 <p style="margin-top:15px;"><small>برای فعال کردن انتخاب تنوع، ابتدا ویژگی‌های قابل تنظیم را برای این محصول در پنل ادمین مشخص کنید و سپس تنوع‌ها را در "مدیریت تنوع‌ها" ایجاد نمایید.</small></p>
-                            <?php endif; ?>
                         <?php endif; ?>
                     </div>
+                    
+                    <div class="mb-6 text-sm text-gray-600 leading-relaxed prose prose-sm max-w-none">
+                        <?php echo nl2br(htmlspecialchars(substr($product['description'] ?? '', 0, 250) . (strlen($product['description'] ?? '') > 250 ? '...' : ''))); ?>
+                         <?php if (strlen($product['description'] ?? '') > 250): ?>
+                            <a href="#full_description_tab_content" class="text-primary hover:underline font-medium"> بیشتر بخوانید</a>
+                        <?php endif; ?>
+                    </div>
+
+                    <form action="<?php echo BASE_URL; ?>cart/add" method="post" id="addToCartFormFrontend">
+                        <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                        
+                        <?php if ($product['product_type'] == 'variable'): ?>
+                            <div id="variation_selectors_container_frontend" class="mb-6 space-y-4">
+                                <?php if (isset($data['product_configurable_attributes']) && !empty($data['product_configurable_attributes'])): ?>
+                                    <?php foreach ($data['product_configurable_attributes'] as $attribute): ?>
+                                        <div class="attribute-selector-group-frontend">
+                                            <label for="attr_frontend_<?php echo $attribute['id']; ?>" class="block text-sm font-medium text-gray-700 mb-1">
+                                                انتخاب <?php echo htmlspecialchars($attribute['name']); ?>:
+                                            </label>
+                                            <select name="attributes[<?php echo $attribute['id']; ?>]" 
+                                                    id="attr_frontend_<?php echo $attribute['id']; ?>" 
+                                                    class="variation-attribute-select-frontend mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-primary focus:border-primary sm:text-sm"
+                                                    data-attribute-id="<?php echo $attribute['id']; ?>">
+                                                <option value="">-- <?php echo htmlspecialchars($attribute['name']); ?> --</option>
+                                                <?php if (!empty($attribute['values'])): ?>
+                                                    <?php foreach ($attribute['values'] as $value_item): ?>
+                                                        <option value="<?php echo $value_item['id']; ?>">
+                                                            <?php echo htmlspecialchars($value_item['value']); ?>
+                                                        </option>
+                                                    <?php endforeach; ?>
+                                                <?php endif; ?>
+                                            </select>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                     <p class="text-sm text-red-500">ویژگی‌های قابل تنظیمی برای این محصول یافت نشد.</p>
+                                <?php endif; ?>
+                                <input type="hidden" name="variation_id" id="selected_variation_id_frontend" value="">
+                                <div id="variation_info_frontend" class="mt-2 text-sm min-h-[20px]"></div>
+                            </div>
+                        <?php endif; ?>
+
+                        <div class="flex items-center mb-6">
+                            <label for="quantity_frontend" class="ml-3 text-sm font-medium text-gray-700">تعداد:</label>
+                            <div class="flex items-center border border-gray-300 rounded-md">
+                                <button type="button" onclick="updateQuantity(-1)" class="px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-r-md focus:outline-none">-</button>
+                                <input type="number" name="quantity" id="quantity_frontend" value="1" min="1" 
+                                       class="w-16 text-center border-t border-b border-gray-300 py-2 focus:outline-none focus:ring-0 focus:border-gray-300">
+                                <button type="button" onclick="updateQuantity(1)" class="px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-l-md focus:outline-none">+</button>
+                            </div>
+                        </div>
+
+                        <div id="stock_status_frontend" class="mb-6 text-sm min-h-[20px]">
+                            <?php if ($product['product_type'] == 'simple' && isset($product['stock_quantity'])): ?>
+                                <?php if ((int)$product['stock_quantity'] > 0): ?>
+                                    <span class="text-green-600 font-semibold"><i class="fas fa-check-circle mr-1"></i> موجود در انبار (<?php echo $product['stock_quantity']; ?> عدد)</span>
+                                <?php else: ?>
+                                    <span class="text-red-500 font-semibold"><i class="fas fa-times-circle mr-1"></i> اتمام موجودی</span>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        </div>
+
+                        <button type="submit" 
+                                id="addToCartButtonFrontend"
+                                class="w-full flex items-center justify-center bg-accent hover:bg-accent-dark text-white font-bold py-3 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105 shadow-lg disabled:opacity-60 disabled:cursor-not-allowed"
+                                <?php echo ($product['product_type'] == 'simple' && (!isset($product['stock_quantity']) || (int)$product['stock_quantity'] <= 0)) ? 'disabled' : ''; ?>>
+                            <i class="fas fa-cart-plus mr-2"></i>افزودن به سبد خرید
+                        </button>
+                    </form>
                 </div>
-                <br>
-                <a href="<?php echo BASE_URL; ?>products/index" class="button-link button-secondary" style="display: inline-block; margin-top: 20px;">بازگشت به لیست محصولات</a>
-            <?php else: ?>
-                <p>اطلاعات محصول یافت نشد.</p>
-            <?php endif; ?>
-        </section>
-    </div>
+            </div>
+        </div>
 
-    <script type="text/template" id="product_variations_data">
-        <?php echo isset($data['product_variations_json']) ? $data['product_variations_json'] : '[]'; ?>
-    </script>
-
-    <?php if (isset($data['product']) && $data['product']['product_type'] == 'variable' && !empty($data['product_configurable_attributes'])): ?>
-    <script>
-        // کد جاوااسکریپت برای مدیریت انتخاب تنوع‌ها (از آرتیفکت view_products_show_v4_no_sidebar)
-        // ... (این کد طولانی است و در پاسخ قبلی به طور کامل آمده است)
-        document.addEventListener('DOMContentLoaded', function() {
-            const attributeSelectors = document.querySelectorAll('.variation-attribute-select');
-            const variationsDataElement = document.getElementById('product_variations_data');
-            let variations = [];
-            const base_url_js = '<?php echo BASE_URL; ?>';
-            const defaultImageSrc = document.getElementById('main_product_image') ? document.getElementById('main_product_image').src : '<?php echo BASE_URL . 'images/placeholder.png'; ?>';
-            const defaultImageAlt = document.getElementById('main_product_image') ? document.getElementById('main_product_image').alt : 'تصویر محصول';
-
-            if (variationsDataElement && variationsDataElement.textContent.trim() !== "") {
-                try { variations = JSON.parse(variationsDataElement.textContent); } catch (e) { console.error("JS Error: Parsing variations JSON failed:", e); variations = []; }
-            }
-            
-            const priceDisplay = document.getElementById('variation_price_display');
-            const stockDisplay = document.getElementById('variation_stock_display');
-            const variationMessage = document.getElementById('variation_message');
-            const addToCartSection = document.getElementById('add_to_cart_section_variable');
-            const addToCartButton = document.getElementById('add_to_cart_variable_btn');
-            const quantityInput = document.getElementById('quantity_variable_<?php echo $data['product']['id']; ?>');
-            const selectedVariationIdInput = document.getElementById('selected_variation_id');
-            const mainProductImage = document.getElementById('main_product_image');
-
-            function findMatchingVariation() {
-                const selectedOptions = {}; 
-                let allAttributesSelected = true;
-                if(attributeSelectors.length === 0 && variations.length === 1 && (!variations[0].attributes || variations[0].attributes.length === 0)) { return variations[0]; }
-                if(attributeSelectors.length === 0 && variations.length > 0) { allAttributesSelected = false; }
-                attributeSelectors.forEach(selector => {
-                    const attributeId = selector.dataset.attributeId;
-                    if (selector.value && selector.value !== "") { selectedOptions[attributeId] = selector.value; } else { allAttributesSelected = false; }
-                });
-                if (!allAttributesSelected) { updateVariationDisplay(null, 'لطفاً تمام گزینه‌ها را انتخاب کنید.'); return null; }
-                for (const variation of variations) {
-                    if (!variation.attributes || !Array.isArray(variation.attributes) || variation.attributes.length !== Object.keys(selectedOptions).length) { continue; }
-                    let match = true;
-                    const variationAttrsMap = {};
-                    variation.attributes.forEach(attr => { variationAttrsMap[String(attr.attribute_id)] = String(attr.attribute_value_id); });
-                    for (const selectedAttrId in selectedOptions) {
-                        if (String(variationAttrsMap[selectedAttrId]) !== String(selectedOptions[selectedAttrId])) { match = false; break; }
-                    }
-                    if (match) { updateVariationDisplay(variation); return variation; }
-                }
-                updateVariationDisplay(null, 'این ترکیب از ویژگی‌ها موجود نیست.'); return null; 
-            }
-
-            function updateVariationDisplay(variation, message = '') {
-                if (variation && parseInt(variation.is_active) === 1) { 
-                    priceDisplay.innerHTML = variation.price ? parseFloat(variation.price).toLocaleString('fa-IR') + ' تومان' : '<em>(قیمت محصول اصلی)</em>';
-                    stockDisplay.innerHTML = 'موجودی: ' + parseInt(variation.stock_quantity) + ' عدد';
-                    variationMessage.textContent = '';
-                    addToCartSection.style.visibility = 'visible';
-                    if (parseInt(variation.stock_quantity) > 0) {
-                        addToCartButton.disabled = false; quantityInput.disabled = false;
-                        quantityInput.max = variation.stock_quantity; quantityInput.value = 1; 
-                    } else {
-                        stockDisplay.innerHTML = '<strong style="color:red;">اتمام موجودی</strong>';
-                        addToCartButton.disabled = true; quantityInput.disabled = true;
-                        variationMessage.textContent = 'این تنوع موجود نیست.';
-                    }
-                    selectedVariationIdInput.value = variation.id;
-                    if (variation.image_url && mainProductImage) { mainProductImage.src = base_url_js + variation.image_url; mainProductImage.alt = variation.name || 'تصویر تنوع'; } 
-                    else if (mainProductImage) { mainProductImage.src = defaultImageSrc; mainProductImage.alt = defaultImageAlt; }
-                } else {
-                    priceDisplay.textContent = ''; stockDisplay.textContent = '';
-                    addToCartSection.style.visibility = 'hidden'; addToCartButton.disabled = true; quantityInput.disabled = true;
-                    selectedVariationIdInput.value = '';
-                    if(mainProductImage) { mainProductImage.src = defaultImageSrc; mainProductImage.alt = defaultImageAlt; }
-                    if (variation && parseInt(variation.is_active) === 0) { variationMessage.textContent = 'این تنوع در حال حاضر فعال نیست.';} 
-                    else if (message) { variationMessage.textContent = message; } 
-                    else {
-                        let allSel = true; if(attributeSelectors.length > 0) attributeSelectors.forEach(s => { if(s.value === "") allSel = false; });
-                        if(attributeSelectors.length > 0 && !allSel) { variationMessage.textContent = 'لطفاً تمام گزینه‌ها را انتخاب کنید.';} 
-                        else if (attributeSelectors.length > 0) { variationMessage.textContent = 'این ترکیب از ویژگی‌ها موجود نیست.';}
-                        else { variationMessage.textContent = ''; }
-                    }
-                }
-            }
-            attributeSelectors.forEach(s => { s.addEventListener('change', findMatchingVariation); });
-            if(attributeSelectors.length > 0){ updateVariationDisplay(null, 'لطفاً گزینه‌ها را برای مشاهده قیمت و موجودی انتخاب کنید.'); } 
-            else if (variations.length === 1 && (!variations[0].attributes || variations[0].attributes.length === 0) && parseInt(variations[0].is_active) === 1) { updateVariationDisplay(variations[0]); }
-            else { addToCartSection.style.visibility = 'hidden'; addToCartButton.disabled = true; quantityInput.disabled = true; if (variations.length === 0 && attributeSelectors.length > 0) { variationMessage.textContent = 'هیچ تنوعی برای این محصول تعریف نشده است.';}}
-        });
-    </script>
+        <div class="mt-10 md:mt-16 bg-white rounded-xl shadow-xl p-6 md:p-8">
+            <div class="border-b border-gray-200 mb-6">
+                <nav class="-mb-px flex space-x-4 space-x-reverse" aria-label="Tabs">
+                    <a href="#full_description_tab_content" id="tab_description" onclick="switchTab(event, 'description')"
+                       class="tab-button whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-primary text-primary">
+                       توضیحات کامل
+                    </a>
+                    <a href="#specifications_tab_content" id="tab_specifications" onclick="switchTab(event, 'specifications')"
+                       class="tab-button whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                       مشخصات فنی
+                    </a>
+                    <a href="#reviews_tab_content" id="tab_reviews" onclick="switchTab(event, 'reviews')"
+                       class="tab-button whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                       نظرات کاربران (0)
+                    </a>
+                </nav>
+            </div>
+            <div>
+                <div id="full_description_tab_content" class="tab-content prose prose-sm max-w-none text-gray-700 leading-relaxed">
+                    <?php echo nl2br(htmlspecialchars($product['description'] ?? 'توضیحات بیشتری برای این محصول ارائه نشده است.')); ?>
+                </div>
+                <div id="specifications_tab_content" class="tab-content hidden">
+                    <h3 class="text-lg font-semibold mb-3">مشخصات فنی</h3>
+                    <ul class="list-disc list-inside space-y-1 text-sm">
+                        <li>وزن: <?php echo htmlspecialchars($product['weight'] ?? '-'); ?> گرم</li>
+                        <li>ابعاد: <?php echo htmlspecialchars($product['dimensions'] ?? '-'); ?></li>
+                    </ul>
+                </div>
+                <div id="reviews_tab_content" class="tab-content hidden">
+                     <h3 class="text-lg font-semibold mb-3">نظرات کاربران</h3>
+                    <p class="text-sm text-gray-500">هنوز نظری برای این محصول ثبت نشده است. شما اولین نفر باشید!</p>
+                </div>
+            </div>
+        </div>
+    <?php else: ?>
+        <div class="text-center py-12">
+            <i class="fas fa-exclamation-triangle fa-4x text-red-400 mb-4"></i>
+            <p class="text-xl text-gray-600">محصول مورد نظر یافت نشد.</p>
+            <a href="<?php echo BASE_URL; ?>products" class="mt-6 inline-block bg-primary text-white font-semibold py-2 px-6 rounded-md hover:bg-primary-dark transition-colors">
+                بازگشت به فروشگاه
+            </a>
+        </div>
     <?php endif; ?>
+</div>
+
+<div id="imageModal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[100] hidden p-4" onclick="closeImageModal()">
+    <div class="bg-white p-2 rounded-lg max-w-3xl max-h-[90vh] relative" onclick="event.stopPropagation();">
+        <img id="modalImage" src="" alt="بزرگنمایی تصویر محصول" class="max-w-full max-h-[85vh] object-contain">
+        <button onclick="closeImageModal()" class="absolute top-2 right-2 text-gray-600 hover:text-red-500 bg-white bg-opacity-75 rounded-full p-1 text-2xl leading-none">
+            &times;
+        </button>
+    </div>
+</div>
+
+<script>
+    const mainProductImage = document.getElementById('mainProductImage');
+    const galleryThumbnails = document.querySelectorAll('.gallery-thumbnail');
+
+    function changeMainImage(newSrc, clickedThumbnail) { /* ... as before ... */ }
+    if (galleryThumbnails.length > 0) { galleryThumbnails[0].classList.add('border-primary', 'ring-2', 'ring-primary-light'); }
+    if (document.querySelector('.thumbnail-slider')) { new Swiper('.thumbnail-slider', { /* ... config ... */ }); }
+    function updateQuantity(change) { /* ... as before ... */ }
+    function switchTab(event, tabName) { /* ... as before ... */ }
+    const imageModal = document.getElementById('imageModal');
+    const modalImage = document.getElementById('modalImage');
+    function openImageModal(src) { /* ... as before ... */ }
+    function closeImageModal() { /* ... as before ... */ }
+
+    <?php if (isset($product['product_type']) && $product['product_type'] == 'variable' && isset($data['product_variations_json'])): ?>
+    const variationsDataElFrontend = <?php echo $data['product_variations_json']; ?>; // This is already a JSON string
+    let variationsDataFrontend = [];
+    console.log("Raw variationsDataFrontend JSON string from PHP:", variationsDataElFrontend);
+    try {
+        // Check if it's already an object (if json_encode was not used in controller for this specific var)
+        if (typeof variationsDataElFrontend === 'string') {
+            variationsDataFrontend = JSON.parse(variationsDataElFrontend);
+        } else {
+            variationsDataFrontend = variationsDataElFrontend; // Assume it's already an object/array
+        }
+        console.log("Parsed variationsDataFrontend:", variationsDataFrontend);
+    } catch (e) {
+        console.error("Error parsing product_variations_json:", e, "Content was:", variationsDataElFrontend);
+        variationsDataFrontend = []; // Fallback to empty array on error
+        // Optionally display an error to the user
+        const variationInfoDiv = document.getElementById('variation_info_frontend');
+        if (variationInfoDiv) {
+            variationInfoDiv.innerHTML = '<span class="text-red-500 font-semibold">خطا در بارگذاری تنوع‌ها. لطفاً با پشتیبانی تماس بگیرید.</span>';
+        }
+    }
+
+    const attributeSelectsFrontend = document.querySelectorAll('.variation-attribute-select-frontend');
+    const priceDisplayFrontend = document.getElementById('dynamicProductPrice');
+    const stockStatusDisplayFrontend = document.getElementById('stock_status_frontend');
+    const selectedVariationIdInputFrontend = document.getElementById('selected_variation_id_frontend');
+    const addToCartButtonFrontend = document.getElementById('addToCartButtonFrontend');
+    const quantityInputFrontend = document.getElementById('quantity_frontend');
+
+    function updateVariationDetailsFrontend() {
+        const selectedOptions = {};
+        let allSelected = true;
+        attributeSelectsFrontend.forEach(select => {
+            if (select.value) {
+                selectedOptions[select.dataset.attributeId] = select.value;
+            } else {
+                allSelected = false;
+            }
+        });
+
+        if (!allSelected || (attributeSelectsFrontend.length > 0 && Object.keys(selectedOptions).length < attributeSelectsFrontend.length) ) {
+            if(priceDisplayFrontend) priceDisplayFrontend.innerHTML = '<small class="text-lg text-gray-500 font-medium">لطفاً تمام گزینه‌ها را انتخاب کنید</small>';
+            if(stockStatusDisplayFrontend) stockStatusDisplayFrontend.innerHTML = '';
+            if(selectedVariationIdInputFrontend) selectedVariationIdInputFrontend.value = '';
+            if(addToCartButtonFrontend) addToCartButtonFrontend.disabled = true;
+            return;
+        }
+        
+        let matchedVariation = null;
+        if (variationsDataFrontend && variationsDataFrontend.length > 0) {
+            if (attributeSelectsFrontend.length === 0 && variationsDataFrontend.length === 1 && (!variationsDataFrontend[0].attributes || variationsDataFrontend[0].attributes.length === 0)) {
+                matchedVariation = variationsDataFrontend[0];
+            } else {
+                 matchedVariation = variationsDataFrontend.find(variation => {
+                    if (!variation.attributes || !Array.isArray(variation.attributes) || variation.attributes.length !== Object.keys(selectedOptions).length) return false;
+                    return variation.attributes.every(attr => String(selectedOptions[attr.attribute_id]) === String(attr.attribute_value_id));
+                });
+            }
+        }
+
+        if (matchedVariation && parseInt(matchedVariation.is_active) === 1) {
+            if(priceDisplayFrontend) priceDisplayFrontend.innerHTML = parseFloat(matchedVariation.price || 0).toLocaleString('fa-IR') + ' <span class="text-lg font-medium">تومان</span>';
+            if(selectedVariationIdInputFrontend) selectedVariationIdInputFrontend.value = matchedVariation.id;
+            
+            if (parseInt(matchedVariation.stock_quantity) > 0) {
+                if(stockStatusDisplayFrontend) stockStatusDisplayFrontend.innerHTML = `<span class="text-green-600 font-semibold"><i class="fas fa-check-circle mr-1"></i> موجود (${matchedVariation.stock_quantity} عدد)</span>`;
+                if(addToCartButtonFrontend) addToCartButtonFrontend.disabled = false;
+                if(quantityInputFrontend) quantityInputFrontend.max = matchedVariation.stock_quantity;
+            } else {
+                if(stockStatusDisplayFrontend) stockStatusDisplayFrontend.innerHTML = '<span class="text-red-500 font-semibold"><i class="fas fa-times-circle mr-1"></i> اتمام موجودی</span>';
+                if(addToCartButtonFrontend) addToCartButtonFrontend.disabled = true;
+            }
+        } else {
+            if(priceDisplayFrontend) priceDisplayFrontend.innerHTML = '<small class="text-lg text-red-500 font-medium">این ترکیب از محصول موجود نیست.</small>';
+            if(stockStatusDisplayFrontend) stockStatusDisplayFrontend.innerHTML = '';
+            if(selectedVariationIdInputFrontend) selectedVariationIdInputFrontend.value = '';
+            if(addToCartButtonFrontend) addToCartButtonFrontend.disabled = true;
+        }
+    }
+
+    attributeSelectsFrontend.forEach(select => {
+        select.addEventListener('change', updateVariationDetailsFrontend);
+    });
     
+    if (variationsDataFrontend && variationsDataFrontend.length === 1 && (!variationsDataFrontend[0].attributes || variationsDataFrontend[0].attributes.length === 0)) {
+        if(selectedVariationIdInputFrontend) selectedVariationIdInputFrontend.value = variationsDataFrontend[0].id;
+        updateVariationDetailsFrontend(); 
+    } else if (attributeSelectsFrontend.length > 0) {
+        updateVariationDetailsFrontend(); 
+    }
+    <?php endif; ?>
+
+    const addToCartFormFrontend = document.getElementById('addToCartFormFrontend');
+    if (addToCartFormFrontend) {
+        addToCartFormFrontend.addEventListener('submit', function(event) {
+            const productType = "<?php echo $product['product_type'] ?? 'simple'; ?>";
+            if (productType === 'variable') {
+                const variationId = document.getElementById('selected_variation_id_frontend').value;
+                if (!variationId) {
+                    event.preventDefault();
+                    const variationInfoDiv = document.getElementById('variation_info_frontend');
+                    if (variationInfoDiv) {
+                        variationInfoDiv.innerHTML = '<span class="text-red-500 font-semibold">لطفاً تمام گزینه‌ها را برای انتخاب تنوع تکمیل کنید.</span>';
+                        setTimeout(() => { variationInfoDiv.innerHTML = ''; }, 3000);
+                    }
+                }
+            }
+        });
+    }
+</script>
+
+<?php require_once(__DIR__ . '/../layouts/footer.php'); ?>

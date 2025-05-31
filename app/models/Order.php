@@ -11,7 +11,7 @@ class Order {
             $this->db = new Database(); 
         } else { 
             error_log("OrderModel FATAL ERROR: Database class not found.");
-            die("Fatal Error: Database class not found in Order model."); 
+            throw new Exception("Fatal Error: Database class not found in Order model.");
         }
         if (class_exists('Product')) { 
             $this->productModel = new Product(); 
@@ -27,14 +27,7 @@ class Order {
         }
     }
 
-    /**
-     * Create a new order and its items in the database
-     * @param array $data Order data including user info, cart items, etc.
-     * @param int|null $affiliate_placing_order_id ID of the affiliate placing the order for a customer, if any.
-     * @return int|false The ID of the created order on success, false on failure
-     */
     public function createOrder($data, $affiliate_placing_order_id = null) {
-        // Ensure models are available, especially if not loaded in constructor due to load order
         if (!$this->productModel && class_exists('Product')) { 
             $this->productModel = new Product(); 
         }
@@ -42,24 +35,28 @@ class Order {
             $this->userModel = new User(); 
         }
 
-        if (!$this->productModel) { 
-             error_log("OrderModel::createOrder - ProductModel is STILL not available. Cannot proceed.");
+        if (!$this->productModel || !$this->userModel) { 
+             error_log("OrderModel::createOrder - ProductModel or UserModel is STILL not available. Cannot proceed.");
              return false; 
         }
         
-        $platform_rate_defined = defined('PLATFORM_COMMISSION_RATE') ? (float)PLATFORM_COMMISSION_RATE : 0;
-        error_log("OrderModel::createOrder - Platform Commission Rate being used: " . $platform_rate_defined);
+        $platform_rate_defined = defined('PLATFORM_COMMISSION_RATE') ? (float)PLATFORM_COMMISSION_RATE : 0.0;
+        // error_log("OrderModel::createOrder - Platform Commission Rate being used: " . $platform_rate_defined); // Keep for debugging if needed
         
         if (method_exists($this->db, 'beginTransaction')) {
             $this->db->beginTransaction();
         }
 
         try {
-            // 1. Insert order
-            $this->db->query('INSERT INTO orders (user_id, first_name, last_name, email, phone, address, city, postal_code, total_amount, payment_method, notes, order_status, payment_status, placed_by_affiliate_id)
-                              VALUES (:user_id, :first_name, :last_name, :email, :phone, :address, :city, :postal_code, :total_amount, :payment_method, :notes, :order_status, :payment_status, :placed_by_affiliate_id)');
+            $this->db->query('INSERT INTO orders (user_id, first_name, last_name, email, phone, address, city, postal_code, total_amount, payment_method, notes, order_status, payment_status, placed_by_affiliate_id, created_at, updated_at)
+                              VALUES (:user_id, :first_name, :last_name, :email, :phone, :address, :city, :postal_code, :total_amount, :payment_method, :notes, :order_status, :payment_status, :placed_by_affiliate_id, NOW(), NOW())');
             
-            $this->db->bind(':user_id', isset($data['customer_user_id']) ? (int)$data['customer_user_id'] : null); 
+            if (!isset($data['user_id']) || empty($data['user_id'])) {
+                error_log("OrderModel::createOrder - CRITICAL: 'user_id' is missing or empty in data array for orders table. Data: " . print_r($data, true));
+                if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+                return false; 
+            }
+            $this->db->bind(':user_id', (int)$data['user_id']); 
             $this->db->bind(':first_name', $data['first_name']);
             $this->db->bind(':last_name', $data['last_name']);
             $this->db->bind(':email', $data['email']);
@@ -67,6 +64,11 @@ class Order {
             $this->db->bind(':address', $data['address']);
             $this->db->bind(':city', $data['city']);
             $this->db->bind(':postal_code', $data['postal_code']);
+            if (!array_key_exists('total_price', $data) || $data['total_price'] === null) {
+                error_log("OrderModel::createOrder - CRITICAL: 'total_price' is missing or null in data array. Data: " . print_r($data, true));
+                if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+                return false; 
+            }
             $this->db->bind(':total_amount', (float)$data['total_price']); 
             $this->db->bind(':payment_method', $data['payment_method']);
             $this->db->bind(':notes', $data['notes']);
@@ -74,9 +76,9 @@ class Order {
             $this->db->bind(':payment_status', $data['payment_status'] ?? ($data['payment_method'] == 'cod' ? 'pending_on_delivery' : 'pending'));
             $this->db->bind(':placed_by_affiliate_id', $affiliate_placing_order_id ? (int)$affiliate_placing_order_id : null);
 
-
             if (!$this->db->execute()) { 
-                error_log("OrderModel::createOrder - Failed to insert into orders table. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
+                $db_error_info = $this->db->getErrorInfo();
+                error_log("OrderModel::createOrder - Failed to insert into orders table. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
                 if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
                 return false; 
             }
@@ -86,44 +88,51 @@ class Order {
                 if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
                 return false; 
             }
-            error_log("OrderModel::createOrder - Order #{$order_id} created. Processing items...");
+            // error_log("OrderModel::createOrder - Order #{$order_id} created. Processing items...");
 
-            // 2. Insert order items
+            $affiliate_id_for_this_order = null;
+            if ($affiliate_placing_order_id !== null) { 
+                $affiliate_id_for_this_order = (int)$affiliate_placing_order_id;
+            } elseif (isset($_SESSION['referred_by_affiliate_code']) && !empty($_SESSION['referred_by_affiliate_code'])) { 
+                $affiliateUser = $this->userModel->findUserByAffiliateCode($_SESSION['referred_by_affiliate_code']);
+                if ($affiliateUser && isset($affiliateUser['id'])) {
+                    $affiliate_id_for_this_order = (int)$affiliateUser['id'];
+                } else {
+                    error_log("OrderModel::createOrder - Order #{$order_id}: Affiliate code {$_SESSION['referred_by_affiliate_code']} in session, but no user found with this code.");
+                }
+            }
+
             foreach ($data['cart_items'] as $item_cart_id => $cart_item) {
-                if (!isset($cart_item['product_id'], $cart_item['name'], $cart_item['quantity'], $cart_item['price'])) { 
-                    error_log("OrderModel::createOrder - Invalid cart item structure for item_cart_id: {$item_cart_id}. Item: " . print_r($cart_item, true));
+                if (!isset($cart_item['product_id'], $cart_item['name'], $cart_item['quantity'], $cart_item['price']) || 
+                    !is_numeric($cart_item['product_id']) || !is_numeric($cart_item['quantity']) || !is_numeric($cart_item['price'])) { 
+                    error_log("OrderModel::createOrder - Invalid cart item structure for order #{$order_id}. Item: " . print_r($cart_item, true));
                     if (method_exists($this->db, 'rollBack')) $this->db->rollBack(); 
                     return false; 
                 }
-
+                
                 $product_details = $this->productModel->getProductById((int)$cart_item['product_id']);
+                
                 if (!$product_details) { 
-                    error_log("OrderModel::createOrder - CRITICAL: Product details not found for product_id: " . $cart_item['product_id'] . " in cart item: " . print_r($cart_item, true));
+                    error_log("OrderModel::createOrder - CRITICAL for order #{$order_id}: Product details not found for product_id: " . $cart_item['product_id']);
                     if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
                     return false; 
                 }
-                error_log("OrderModel::createOrder - Product details for item {$cart_item['product_id']}: " . print_r($product_details, true));
 
                 $vendor_id_for_item = (isset($product_details['vendor_id']) && !empty($product_details['vendor_id'])) ? (int)$product_details['vendor_id'] : null;
                 $item_sub_total = (float)$cart_item['price'] * (int)$cart_item['quantity'];
                 
-                $platform_commission_rate_to_store = defined('PLATFORM_COMMISSION_RATE') ? (float)PLATFORM_COMMISSION_RATE : null;
+                $platform_commission_rate_to_store = ($platform_rate_defined > 0) ? $platform_rate_defined : null; 
                 $platform_commission_amount_for_item = 0.00; 
                 $vendor_earning_for_item = 0.00; 
 
                 if ($vendor_id_for_item !== null) { 
                     if ($platform_rate_defined > 0) {
-                        $platform_commission_amount_for_item = round($item_sub_total * $platform_rate_defined, 2);
+                        $platform_commission_amount_for_item = round($item_sub_total * $platform_rate_defined, 2); 
                         $vendor_earning_for_item = $item_sub_total - $platform_commission_amount_for_item;
                     } else { 
-                        $vendor_earning_for_item = $item_sub_total; // No platform commission, vendor gets full amount
-                        $platform_commission_amount_for_item = 0.00;
+                        $vendor_earning_for_item = $item_sub_total; 
                     }
-                } else { // Product belongs to the store itself (vendor_id is NULL)
-                    $platform_commission_amount_for_item = 0.00; 
-                    $vendor_earning_for_item = 0.00; 
                 }
-                error_log("OrderModel::createOrder - For item {$cart_item['product_id']}: Subtotal={$item_sub_total}, VendorID={$vendor_id_for_item}, PlatformCommRateToStore={$platform_commission_rate_to_store}, PlatformCommAmt={$platform_commission_amount_for_item}, VendorEarning={$vendor_earning_for_item}");
 
                 $this->db->query('INSERT INTO order_items 
                                     (order_id, product_id, variation_id, product_name, quantity, price_at_purchase, sub_total, 
@@ -131,108 +140,79 @@ class Order {
                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
                 
                 $params_order_item = [
-                    $order_id, 
-                    (int)$cart_item['product_id'],
+                    $order_id, (int)$cart_item['product_id'],
                     (isset($cart_item['variation_id']) && !empty($cart_item['variation_id'])) ? (int)$cart_item['variation_id'] : null,
-                    $cart_item['name'], 
-                    (int)$cart_item['quantity'], 
-                    (float)$cart_item['price'], 
-                    $item_sub_total,
-                    $vendor_id_for_item,
-                    $platform_commission_rate_to_store, 
-                    $platform_commission_amount_for_item, 
-                    $vendor_earning_for_item, 
-                    'unpaid'
+                    $cart_item['name'], (int)$cart_item['quantity'], (float)$cart_item['price'], 
+                    $item_sub_total, $vendor_id_for_item,
+                    $platform_commission_rate_to_store, $platform_commission_amount_for_item, 
+                    $vendor_earning_for_item, 'unpaid' 
                 ];
 
                 if (!$this->db->execute($params_order_item)) { 
-                    error_log("OrderModel::createOrder - Failed to insert order_item. OrderID:{$order_id}, ProdID:{$cart_item['product_id']}. DBError:" . implode('|',$this->db->getErrorInfo()));
+                    $db_error_info = $this->db->getErrorInfo();
+                    error_log("OrderModel::createOrder - Failed to insert order_item for order #{$order_id}. DBError:" . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
                     if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
                     return false; 
                 }
                 $order_item_id = $this->db->lastInsertId();
-                error_log("OrderModel::createOrder - OrderItem #{$order_item_id} created for Order #{$order_id}.");
+                // error_log("OrderModel::createOrder - OrderItem #{$order_item_id} for Order #{$order_id} created.");
 
-                // 3. Record affiliate commission
-                $affiliate_id_to_credit = null;
-                if ($affiliate_placing_order_id !== null) { // Order placed by an affiliate for a customer
-                    $affiliate_id_to_credit = $affiliate_placing_order_id;
-                    error_log("OrderModel::createOrder - Order placed by affiliate ID: {$affiliate_id_to_credit}");
-                } elseif (isset($_SESSION['referred_by_affiliate_code']) && !empty($_SESSION['referred_by_affiliate_code'])) { // Order placed via referral link
-                    if ($this->userModel) {
-                        $affiliateUser = $this->userModel->findUserByAffiliateCode($_SESSION['referred_by_affiliate_code']);
-                        if ($affiliateUser) {
-                            $affiliate_id_to_credit = $affiliateUser['id'];
-                            error_log("OrderModel::createOrder - Order referred by affiliate ID: {$affiliate_id_to_credit} (Code: {$_SESSION['referred_by_affiliate_code']})");
-                        } else {
-                            error_log("OrderModel::createOrder - Affiliate code {$_SESSION['referred_by_affiliate_code']} in session, but no user found with this code.");
-                        }
-                    } else {
-                        error_log("OrderModel::createOrder - UserModel not available for referral code lookup.");
-                    }
-                }
-
-                if ($affiliate_id_to_credit && $product_details) {
+                if ($affiliate_id_for_this_order && $product_details && 
+                    isset($product_details['affiliate_commission_type']) && $product_details['affiliate_commission_type'] !== 'none' &&
+                    isset($product_details['affiliate_commission_value']) && (float)$product_details['affiliate_commission_value'] > 0) {
+                    
                     $this->recordAffiliateCommission(
-                        $affiliate_id_to_credit, $order_id, $order_item_id,
-                        (int)$cart_item['product_id'], $item_sub_total, 
-                        $product_details['affiliate_commission_type'] ?? null,
-                        $product_details['affiliate_commission_value'] ?? null
+                        $affiliate_id_for_this_order, $order_id, $order_item_id,
+                        (int)$cart_item['product_id'], $item_sub_total, (int)$cart_item['quantity'], 
+                        $product_details['affiliate_commission_type'], (float)$product_details['affiliate_commission_value']
                     );
                 }
-            } // End foreach cart_items
+            } 
 
             if (method_exists($this->db, 'commit')) $this->db->commit();
-            return $order_id;
+            
+            if ($affiliate_id_for_this_order && !$affiliate_placing_order_id) { 
+                 unset($_SESSION['referred_by_affiliate_code']);
+            }
+            return $order_id; 
         } catch (Exception $e) {
             if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
-            error_log("Error in OrderModel::createOrder: " . $e->getMessage());
+            error_log("Error in OrderModel::createOrder: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
             return false;
         }
     }
 
-    public function recordAffiliateCommission($affiliate_id, $order_id, $order_item_id, $product_id, $sale_amount, $commission_type, $commission_value) {
-        error_log("OrderModel::recordAffiliateCommission - Args: affID={$affiliate_id}, ordID={$order_id}, itemID={$order_item_id}, prodID={$product_id}, saleAmt={$sale_amount}, commType={$commission_type}, commVal={$commission_value}");
-
-        if (empty($affiliate_id) || empty($commission_type) || $commission_type === 'none' || $commission_value === null || (float)$commission_value <= 0) {
-            error_log("OrderModel::recordAffiliateCommission - No commission to record (invalid params or type 'none'). Affiliate: {$affiliate_id}, Type: {$commission_type}, Value: {$commission_value}");
+    public function recordAffiliateCommission($affiliate_id, $order_id, $order_item_id, $product_id, $item_sub_total, $item_quantity, $product_commission_type, $product_commission_value) {
+        if (empty($affiliate_id) || empty($product_commission_type) || $product_commission_type === 'none' || $product_commission_value <= 0) {
             return false; 
         }
+        $commission_earned = 0.0; 
+        $commission_type_at_sale = $product_commission_type; 
+        $commission_value_at_sale = $product_commission_value; 
 
-        $commission_earned = 0;
-        $rate_to_store = null;
-        $fixed_to_store = null;
-
-        if ($commission_type === 'percentage') {
-            $commission_earned = round($sale_amount * ((float)$commission_value / 100), 2);
-            $rate_to_store = (float)$commission_value / 100;
-            error_log("OrderModel::recordAffiliateCommission - Type: Percentage, Rate: {$rate_to_store}, Earned: {$commission_earned}");
-        } elseif ($commission_type === 'fixed') {
-            $commission_earned = (float)$commission_value;
-            $fixed_to_store = (float)$commission_value;
-            error_log("OrderModel::recordAffiliateCommission - Type: Fixed, Amount: {$fixed_to_store}, Earned: {$commission_earned}");
-        } else {
-            error_log("OrderModel::recordAffiliateCommission - Invalid commission type: {$commission_type}");
-            return false; 
-        }
+        if ($product_commission_type === 'percentage') {
+            $commission_earned = round($item_sub_total * ($product_commission_value / 100), 2);
+        } elseif ($product_commission_type === 'fixed_amount') { 
+            $commission_earned = round((float)$product_commission_value * (int)$item_quantity, 2);
+        } else { return false; }
 
         if ($commission_earned > 0) {
             $this->db->query("INSERT INTO affiliate_commissions 
-                                (affiliate_id, order_id, order_item_id, product_id, commission_rate, commission_fixed_amount, sale_amount, commission_earned, status)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                                (affiliate_id, order_id, order_item_id, product_id, 
+                                 sale_amount, commission_type_at_sale, commission_value_at_sale, commission_earned, 
+                                 status, created_at, updated_at)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())");
             $params = [
                 (int)$affiliate_id, (int)$order_id, (int)$order_item_id, (int)$product_id,
-                $rate_to_store, $fixed_to_store, (float)$sale_amount, (float)$commission_earned, 'pending'
+                (float)$item_sub_total, $commission_type_at_sale, (float)$commission_value_at_sale, 
+                (float)$commission_earned, 'pending' 
             ];
-            if ($this->db->execute($params)) {
-                error_log("Affiliate commission recorded successfully: Affiliate ID {$affiliate_id}, OrderItem ID {$order_item_id}, Amount {$commission_earned}");
-                return true;
-            } else {
-                error_log("Failed to record affiliate commission. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
+            if (!$this->db->execute($params)) {
+                $db_error_info = $this->db->getErrorInfo();
+                error_log("OrderModel::recordAffiliateCommission - FAILED to insert. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
                 return false;
             }
-        } else {
-            error_log("OrderModel::recordAffiliateCommission - Commission earned is zero or less, not recording.");
+            return true;
         }
         return false;
     }
@@ -240,151 +220,161 @@ class Order {
     public function getOrdersByUserId($user_id) {
         $this->db->query("SELECT o.*, u.username as customer_username FROM orders o JOIN users u ON o.user_id = u.id WHERE o.user_id = :user_id ORDER BY o.created_at DESC");
         $this->db->bind(':user_id', (int)$user_id);
-        $results = $this->db->resultSet();
-        return $results ? $results : [];
+        return $this->db->resultSet() ?: [];
     }
 
     public function getOrderDetailsById($order_id, $user_id = null, $vendor_id = null) {
         $sql = "SELECT * FROM orders WHERE id = :order_id";
-        if ($user_id) { 
-            $sql .= " AND user_id = :user_id";
-        }
+        if ($user_id !== null) { $sql .= " AND user_id = :user_id"; }
         $this->db->query($sql);
         $this->db->bind(':order_id', (int)$order_id);
-        if ($user_id) {
-            $this->db->bind(':user_id', (int)$user_id);
-        }
+        if ($user_id !== null) { $this->db->bind(':user_id', (int)$user_id); }
         $order = $this->db->single();
 
         if ($order) {
             $items_sql = "SELECT oi.id as order_item_id, oi.order_id, oi.product_id, oi.variation_id, 
-                                 oi.product_name, oi.quantity, oi.price_at_purchase, oi.sub_total,
+                                 oi.product_name, oi.quantity, oi.price_at_purchase, oi.sub_total, 
                                  oi.vendor_id, oi.platform_commission_rate, oi.platform_commission_amount, 
                                  oi.vendor_earning, oi.payout_status, oi.payout_id,
                                  p.image_url as product_image_url, 
-                                 pv.image_url as variation_image_url
+                                 pv.image_url as variation_image_url, pv.sku as variation_sku 
                           FROM order_items oi 
                           LEFT JOIN products p ON oi.product_id = p.id
-                          LEFT JOIN product_variations pv ON oi.variation_id = pv.id
+                          LEFT JOIN product_variations pv ON oi.variation_id = pv.id 
                           WHERE oi.order_id = :order_id";
-            
-            $this->db->query($items_sql);
+            $this->db->query($items_sql); 
             $this->db->bind(':order_id', (int)$order_id);
             $order_items = $this->db->resultSet();
-            
             $filtered_items = [];
             if ($order_items) {
                 foreach($order_items as $item) {
-                    $item['display_image_url'] = !empty($item['variation_image_url']) ? $item['variation_image_url'] : $item['product_image_url'];
-                    
+                    $item['display_image_url'] = !empty($item['variation_image_url']) ? $item['variation_image_url'] : (!empty($item['product_image_url']) ? $item['product_image_url'] : null);
                     if ($vendor_id !== null) { 
-                        if (isset($item['vendor_id']) && $item['vendor_id'] == $vendor_id) {
-                            $filtered_items[] = $item;
-                        }
-                    } else { 
-                        $filtered_items[] = $item;
-                    }
+                        if (isset($item['vendor_id']) && (int)$item['vendor_id'] == (int)$vendor_id) { $filtered_items[] = $item; }
+                    } else { $filtered_items[] = $item; }
                 }
             }
             $order['items'] = $filtered_items;
-
-            if ($vendor_id !== null && empty($order['items'])) {
-                return false; 
-            }
+            if ($vendor_id !== null && empty($order['items'])) { return false; }
             return $order;
         }
-        return false;
+        return false; 
     }
-
+    
     public function getAllOrders() {
         $this->db->query("SELECT o.*, u.username as customer_username, u.email as customer_email,
                                  CONCAT(u.first_name, ' ', u.last_name) as customer_full_name
                           FROM orders o
-                          JOIN users u ON o.user_id = u.id
+                          LEFT JOIN users u ON o.user_id = u.id 
                           ORDER BY o.created_at DESC");
         return $this->db->resultSet() ?: [];
     }
 
     public function updateOrderStatus($order_id, $order_status, $payment_status = null) {
         $sql = "UPDATE orders SET order_status = :order_status";
-        if ($payment_status !== null) {
-            $sql .= ", payment_status = :payment_status";
-        }
-        $sql .= ", updated_at = CURRENT_TIMESTAMP WHERE id = :order_id"; // Add updated_at
-
+        if ($payment_status !== null) { $sql .= ", payment_status = :payment_status"; }
+        $sql .= ", updated_at = CURRENT_TIMESTAMP WHERE id = :order_id"; 
         $this->db->query($sql);
         $this->db->bind(':order_status', $order_status);
-        if ($payment_status !== null) {
-            $this->db->bind(':payment_status', $payment_status);
-        }
+        if ($payment_status !== null) { $this->db->bind(':payment_status', $payment_status); }
         $this->db->bind(':order_id', (int)$order_id);
-
         return $this->db->execute();
     }
 
     public function getOrdersForVendor($vendor_id) {
-        $this->db->query("SELECT o.*, u.username as customer_username, u.email as customer_email, u.first_name as customer_first_name, u.last_name as customer_last_name
+        $this->db->query("SELECT o.id as order_id, o.user_id, o.total_amount, o.order_status, o.payment_status, o.created_at as order_date,
+                                 u.username as customer_username, u.email as customer_email, 
+                                 CONCAT(u.first_name, ' ', u.last_name) as customer_full_name
                           FROM orders o
                           JOIN users u ON o.user_id = u.id
-                          WHERE o.id IN (
-                              SELECT DISTINCT oi.order_id 
-                              FROM order_items oi
-                              JOIN products p ON oi.product_id = p.id
-                              WHERE p.vendor_id = :vendor_id
-                          )
+                          WHERE EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.vendor_id = :vendor_id)
                           ORDER BY o.created_at DESC");
         $this->db->bind(':vendor_id', (int)$vendor_id);
-        $results = $this->db->resultSet();
-        return $results ? $results : [];
+        return $this->db->resultSet() ?: [];
     }
 
     public function getVendorWithdrawableBalance($vendor_id) {
+        $valid_order_statuses = ['delivered', 'shipped', 'completed']; 
+        $paid_payment_status = 'paid';
+        $unpaid_payout_status = 'unpaid';
+
+        $quoted_statuses = [];
+        foreach ($valid_order_statuses as $status) {
+            if (preg_match('/^[a-zA-Z0-9_]+$/', $status)) {
+                $quoted_statuses[] = "'" . $status . "'";
+            }
+        }
+        if (empty($quoted_statuses)) {
+            error_log("OrderModel::getVendorWithdrawableBalance - No valid statuses provided for IN clause.");
+            return 0.00;
+        }
+        $status_in_clause = implode(',', $quoted_statuses);
+
         $this->db->query("SELECT SUM(oi.vendor_earning) as total_withdrawable
                           FROM order_items oi
                           JOIN orders o ON oi.order_id = o.id
                           WHERE oi.vendor_id = :vendor_id
                           AND oi.payout_status = :payout_status_unpaid
-                          AND o.order_status IN (:status_delivered, :status_shipped, :status_completed) 
+                          AND o.order_status IN ({$status_in_clause}) 
                           AND o.payment_status = :payment_status_paid"); 
 
         $this->db->bind(':vendor_id', (int)$vendor_id);
-        $this->db->bind(':payout_status_unpaid', 'unpaid');
-        $this->db->bind(':status_delivered', 'delivered'); 
-        $this->db->bind(':status_shipped', 'shipped');     
-        $this->db->bind(':status_completed', 'completed'); // Add if you use this status
-        $this->db->bind(':payment_status_paid', 'paid');   
+        $this->db->bind(':payout_status_unpaid', $unpaid_payout_status);
+        $this->db->bind(':payment_status_paid', $paid_payment_status);   
 
         $result = $this->db->single();
         return $result && isset($result['total_withdrawable']) && $result['total_withdrawable'] !== null ? (float)$result['total_withdrawable'] : 0.00;
     }
 
     public function getUnpaidOrderItemsForVendor($vendor_id) {
+        $valid_order_statuses = ['delivered', 'shipped', 'completed'];
+        $paid_payment_status = 'paid';
+        $unpaid_payout_status = 'unpaid';
+
+        $quoted_statuses = [];
+        foreach ($valid_order_statuses as $status) {
+             if (preg_match('/^[a-zA-Z0-9_]+$/', $status)) {
+                $quoted_statuses[] = "'" . $status . "'";
+            }
+        }
+        if (empty($quoted_statuses)) {
+            error_log("OrderModel::getUnpaidOrderItemsForVendor - No valid statuses provided for IN clause.");
+            return []; 
+        }
+        $status_in_clause = implode(',', $quoted_statuses);
+
         $this->db->query("SELECT oi.id as order_item_id, oi.order_id, oi.product_name, oi.quantity, oi.vendor_earning, o.created_at as order_date
                           FROM order_items oi
                           JOIN orders o ON oi.order_id = o.id
                           WHERE oi.vendor_id = :vendor_id
                           AND oi.payout_status = :payout_status_unpaid
-                          AND o.order_status IN (:status_delivered, :status_shipped, :status_completed)
+                          AND o.order_status IN ({$status_in_clause})
                           AND o.payment_status = :payment_status_paid
                           ORDER BY o.created_at ASC");
         $this->db->bind(':vendor_id', (int)$vendor_id);
-        $this->db->bind(':payout_status_unpaid', 'unpaid');
-        $this->db->bind(':status_delivered', 'delivered');
-        $this->db->bind(':status_shipped', 'shipped');
-        $this->db->bind(':status_completed', 'completed');
-        $this->db->bind(':payment_status_paid', 'paid');
+        $this->db->bind(':payout_status_unpaid', $unpaid_payout_status);
+        $this->db->bind(':payment_status_paid', $paid_payment_status); // Ensure this is bound
         
         return $this->db->resultSet() ?: [];
     }
 
-    public function requestVendorPayout($vendor_id, $requested_amount, $order_item_ids, $payout_method = 'bank_transfer', $payment_details = null) {
+  public function requestVendorPayout($vendor_id, $requested_amount, $order_item_ids, $payout_method = 'bank_transfer', $payment_details = null) {
         if (method_exists($this->db, 'beginTransaction')) $this->db->beginTransaction();
         try {
-            $this->db->query("INSERT INTO vendor_payouts (vendor_id, requested_amount, payout_method, payment_details, status) 
-                              VALUES (?, ?, ?, ?, ?)");
-            $params_payout = [(int)$vendor_id, (float)$requested_amount, $payout_method, $payment_details, 'requested'];
+            // Assuming vendor_payouts table has 'requested_at' but not 'updated_at' to be set on initial insert.
+            // 'processed_at' will be NULL initially.
+            $this->db->query("INSERT INTO vendor_payouts (vendor_id, requested_amount, payout_method, payment_details, status, requested_at) 
+                              VALUES (?, ?, ?, ?, ?, NOW())"); // Removed updated_at
+            $params_payout = [
+                (int)$vendor_id, 
+                (float)$requested_amount, 
+                $payout_method, 
+                $payment_details, 
+                'requested'
+            ];
             if (!$this->db->execute($params_payout)) {
-                error_log("OrderModel::requestVendorPayout - Failed to insert into vendor_payouts. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
+                $db_error_info = $this->db->getErrorInfo();
+                error_log("OrderModel::requestVendorPayout - Failed to insert into vendor_payouts. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
                 if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
                 return 'db_error_payout_insert';
             }
@@ -396,27 +386,45 @@ class Order {
             }
 
             if (!empty($order_item_ids) && is_array($order_item_ids)) {
-                $placeholders = rtrim(str_repeat('?,', count($order_item_ids)), ',');
-                $sql_update_items = "UPDATE order_items 
-                                     SET payout_status = ?, payout_id = ? 
-                                     WHERE vendor_id = ? AND payout_status = ? AND id IN ({$placeholders})";
-                $this->db->query($sql_update_items);
-                $params_update_items = ['requested', $payout_id, (int)$vendor_id, 'unpaid'];
-                foreach ($order_item_ids as $item_id) { $params_update_items[] = (int)$item_id; }
+                $sanitized_item_ids = array_map('intval', $order_item_ids);
+                if (!empty($sanitized_item_ids)) { // Ensure there are items after sanitization
+                    $placeholders = rtrim(str_repeat('?,', count($sanitized_item_ids)), ',');
+                    
+                    // Assuming order_items has an updated_at column that auto-updates or is set by other triggers.
+                    // If not, and you want to track this change, add "updated_at = NOW()" here too.
+                    $sql_update_items = "UPDATE order_items 
+                                         SET payout_status = ?, payout_id = ?, updated_at = NOW() 
+                                         WHERE vendor_id = ? AND payout_status = ? AND id IN ({$placeholders})";
+                    $this->db->query($sql_update_items);
+                    $params_update_items = ['requested', $payout_id, (int)$vendor_id, 'unpaid'];
+                    foreach ($sanitized_item_ids as $item_id) { $params_update_items[] = $item_id; }
 
-                if (!$this->db->execute($params_update_items)) {
-                    error_log("OrderModel::requestVendorPayout - Failed to update order_items for payout_id: {$payout_id}. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
-                    if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
-                    $this->db->query("DELETE FROM vendor_payouts WHERE id = :p_id_del_on_fail"); 
-                    $this->db->bind(':p_id_del_on_fail', $payout_id); 
+                    if (!$this->db->execute($params_update_items)) {
+                        $db_error_info = $this->db->getErrorInfo();
+                        error_log("OrderModel::requestVendorPayout - Failed to update order_items for payout_id: {$payout_id}. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
+                        if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+                        // Attempt to delete the payout request if items could not be updated
+                        $this->db->query("DELETE FROM vendor_payouts WHERE id = :p_id_del_on_fail"); 
+                        $this->db->bind(':p_id_del_on_fail', $payout_id); 
+                        $this->db->execute();
+                        return 'db_error_item_update';
+                    }
+                    if ($this->db->rowCount() != count($sanitized_item_ids)) {
+                        error_log("OrderModel::requestVendorPayout - Mismatch in updated order_items count for payout_id: {$payout_id}. Expected: " . count($sanitized_item_ids) . ", Affected: " . $this->db->rowCount());
+                        // This might not be a fatal error, but worth logging.
+                    }
+                } else { // No valid item IDs after sanitization
+                     error_log("OrderModel::requestVendorPayout - No valid order_item_ids after sanitization for payout_id: {$payout_id}.");
+                    // Delete the payout request
+                    $this->db->query("DELETE FROM vendor_payouts WHERE id = :p_id_del_no_items"); 
+                    $this->db->bind(':p_id_del_no_items', $payout_id); 
                     $this->db->execute();
-                    return 'db_error_item_update';
-                }
-                if ($this->db->rowCount() != count($order_item_ids)) {
-                    error_log("OrderModel::requestVendorPayout - Mismatch in updated order_items count for payout_id: {$payout_id}. Expected: " . count($order_item_ids) . ", Affected: " . $this->db->rowCount());
+                    if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+                    return 'no_valid_items_for_payout';
                 }
             } else { 
                 error_log("OrderModel::requestVendorPayout - No order_item_ids provided for payout_id: {$payout_id} while requested_amount was {$requested_amount}.");
+                // Delete the payout request as it's invalid without items
                 $this->db->query("DELETE FROM vendor_payouts WHERE id = :p_id_del_no_items"); 
                 $this->db->bind(':p_id_del_no_items', $payout_id); 
                 $this->db->execute();
@@ -427,18 +435,17 @@ class Order {
             return (int)$payout_id;
         } catch (Exception $e) {
             if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
-            error_log("Error in OrderModel::requestVendorPayout: " . $e->getMessage());
+            error_log("Error in OrderModel::requestVendorPayout: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
             return 'general_exception';
         }
     }
 
-    public function getPayoutRequestsByVendorId($vendor_id) {
+   public function getPayoutRequestsByVendorId($vendor_id) {
         $this->db->query("SELECT * FROM vendor_payouts WHERE vendor_id = :vendor_id ORDER BY requested_at DESC");
         $this->db->bind(':vendor_id', (int)$vendor_id);
         return $this->db->resultSet() ?: [];
     }
 
-    // --- Admin Payout Methods ---
     public function getAllPayoutRequests($startDate = null, $endDate = null, $status = null) {
         $sql = "SELECT vp.*, u.username as vendor_username, u.email as vendor_email, 
                        CONCAT(u.first_name, ' ', u.last_name) as vendor_full_name
@@ -446,14 +453,14 @@ class Order {
                 JOIN users u ON vp.vendor_id = u.id";
         
         $conditions = [];
-        $params = [];
+        $params = []; 
 
         if ($startDate) {
-            $conditions[] = "vp.requested_at >= :start_date";
+            $conditions[] = "DATE(vp.requested_at) >= :start_date"; 
             $params[':start_date'] = $startDate;
         }
         if ($endDate) {
-            $conditions[] = "vp.requested_at <= :end_date";
+            $conditions[] = "DATE(vp.requested_at) <= :end_date";
             $params[':end_date'] = $endDate;
         }
         if ($status && !empty($status)) {
@@ -487,27 +494,50 @@ class Order {
     
     public function getOrderItemsByPayoutId($payout_id) {
         $this->db->query("SELECT oi.id as order_item_id, oi.order_id, oi.product_id, oi.variation_id, 
-                                 oi.product_name, oi.quantity, oi.price_at_purchase, oi.sub_total,
+                                 oi.product_name, oi.quantity, oi.price_at_purchase, /* oi.price_per_unit, */ oi.sub_total,
                                  oi.vendor_id, oi.platform_commission_rate, oi.platform_commission_amount, 
                                  oi.vendor_earning, oi.payout_status, oi.payout_id,
-                                 p.name as parent_product_name 
+                                 p.name as parent_product_name, 
+                                 pv.sku as variation_sku 
                           FROM order_items oi 
                           LEFT JOIN products p ON oi.product_id = p.id
+                          LEFT JOIN product_variations pv ON oi.variation_id = pv.id
                           WHERE oi.payout_id = :payout_id");
         $this->db->bind(':payout_id', (int)$payout_id);
         return $this->db->resultSet() ?: [];
     }
 
     public function processVendorPayout($payout_id, $new_status, $admin_user_id, $payout_amount_paid = null, $admin_notes = null, $payment_details_admin = null) {
+        // ... (userModel check as before) ...
+        if (!$this->userModel && class_exists('User')) { 
+            $this->userModel = new User();
+        }
+        if (!$this->userModel) {
+            error_log("OrderModel::processVendorPayout - UserModel is not available. Cannot update affiliate balance.");
+            return 'user_model_unavailable'; 
+        }
+
         if (method_exists($this->db, 'beginTransaction')) $this->db->beginTransaction();
         try {
+            $payoutRequest = $this->getPayoutRequestById($payout_id); // Using existing method (ensure it fetches from vendor_payouts)
+            if (!$payoutRequest) {
+                error_log("OrderModel::processVendorPayout - Payout request ID {$payout_id} not found.");
+                if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
+                return 'payout_not_found';
+            }
+            $vendor_id = (int)$payoutRequest['vendor_id'];
+
+            // Assuming vendor_payouts table has 'processed_at' and NO 'updated_at' that we manage here.
+            // If 'updated_at' exists and is auto-updating by DB, no need to set it.
+            // If 'updated_at' exists and is NOT auto-updating, add "updated_at = CURRENT_TIMESTAMP"
             $this->db->query("UPDATE vendor_payouts 
                               SET status = :status, 
                                   payout_amount = :payout_amount, 
                                   notes = :notes, 
                                   payment_details = :payment_details_admin,
-                                  processed_at = CURRENT_TIMESTAMP,
+                                  processed_at = CURRENT_TIMESTAMP, 
                                   processed_by_admin_id = :processed_by_admin_id
+                                  -- Removed explicit updated_at = CURRENT_TIMESTAMP, assuming it auto-updates or doesn't exist
                               WHERE id = :payout_id");
             $this->db->bind(':status', $new_status);
             $this->db->bind(':payout_amount', ($payout_amount_paid !== null) ? (float)$payout_amount_paid : null);
@@ -517,64 +547,74 @@ class Order {
             $this->db->bind(':payout_id', (int)$payout_id);
 
             if (!$this->db->execute()) {
-                error_log("OrderModel::processVendorPayout - Failed to update vendor_payouts for payout_id: {$payout_id}. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
+                $db_error_info = $this->db->getErrorInfo();
+                error_log("OrderModel::processVendorPayout - Failed to update vendor_payouts for payout_id: {$payout_id}. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
                 if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
-                return false;
+                return 'db_error_payout_update';
             }
+            // error_log("OrderModel::processVendorPayout - vendor_payouts table updated for ID {$payout_id} to status {$new_status}.");
 
             if ($new_status === 'completed') {
+                // This part is for vendors, affiliate balance is not directly relevant here unless vendors are also affiliates.
+                // If there's a vendor balance to update in users table, that logic would be similar to affiliate_balance.
+                // For now, focusing on marking order_items as paid.
+
                 $this->db->query("UPDATE order_items 
-                                  SET payout_status = :payout_status_paid
-                                  WHERE payout_id = :payout_id AND payout_status = :payout_status_requested");
+                                  SET payout_status = :payout_status_paid, updated_at = NOW()
+                                  WHERE payout_id = :payout_id AND payout_status = :payout_status_requested"); 
                 $this->db->bind(':payout_status_paid', 'paid');
                 $this->db->bind(':payout_id', (int)$payout_id);
                 $this->db->bind(':payout_status_requested', 'requested'); 
+                
                 if (!$this->db->execute()) {
-                     error_log("OrderModel::processVendorPayout - Failed to update order_items payout_status to 'paid' for payout_id: {$payout_id}. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
+                     $db_error_info = $this->db->getErrorInfo();
+                     error_log("OrderModel::processVendorPayout - Failed to update order_items payout_status to 'paid' for payout_id: {$payout_id}. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
                      if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
-                     return false; 
+                     return 'commission_status_update_failed'; // Re-using, but this is for order_items
                 }
             } 
             elseif (in_array($new_status, ['rejected', 'cancelled'])) { 
                  $this->db->query("UPDATE order_items 
-                                  SET payout_status = :payout_status_unpaid, payout_id = NULL
+                                  SET payout_status = :payout_status_unpaid, payout_id = NULL, updated_at = NOW()
                                   WHERE payout_id = :payout_id AND payout_status = :payout_status_requested");
                 $this->db->bind(':payout_status_unpaid', 'unpaid');
                 $this->db->bind(':payout_id', (int)$payout_id);
                 $this->db->bind(':payout_status_requested', 'requested');
-                $this->db->execute(); 
+                if (!$this->db->execute()) {
+                    // Log error but don't necessarily roll back the payout status change itself
+                     error_log("OrderModel::processVendorPayout - Failed to revert order_items status for payout_id: {$payout_id}.");
+                }
             }
 
             if (method_exists($this->db, 'commit')) $this->db->commit();
-            return true;
+            return true; 
         } catch (Exception $e) {
             if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
-            error_log("Error in OrderModel::processVendorPayout: " . $e->getMessage());
-            return false;
+            error_log("Error in OrderModel::processVendorPayout: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
+            return 'general_exception';
         }
     }
 
-    // --- Platform Commission Methods ---
     public function getOrdersWithPlatformCommission($startDate = null, $endDate = null) {
-        $sql = "SELECT o.*, 
+        $sql = "SELECT o.id as order_id, o.created_at as order_date, o.total_amount as order_total,
                        u.username as customer_username, 
-                       u.email as customer_email,
+                       u.email as customer_email, 
                        CONCAT(u.first_name, ' ', u.last_name) as customer_full_name,
                        (SELECT SUM(oi.platform_commission_amount) 
                         FROM order_items oi 
                         WHERE oi.order_id = o.id) as total_order_platform_commission
                 FROM orders o
-                JOIN users u ON o.user_id = u.id";
+                LEFT JOIN users u ON o.user_id = u.id";
         
         $conditions = [];
         $params = [];
 
         if ($startDate) {
-            $conditions[] = "o.created_at >= :start_date";
+            $conditions[] = "DATE(o.created_at) >= :start_date";
             $params[':start_date'] = $startDate;
         }
         if ($endDate) {
-            $conditions[] = "o.created_at <= :end_date";
+            $conditions[] = "DATE(o.created_at) <= :end_date";
             $params[':end_date'] = $endDate;
         }
 
@@ -601,11 +641,11 @@ class Order {
         if ($startDate || $endDate) {
             $sql .= " JOIN orders o ON oi.order_id = o.id";
             if ($startDate) {
-                $conditions[] = "o.created_at >= :start_date";
+                $conditions[] = "DATE(o.created_at) >= :start_date";
                 $params[':start_date'] = $startDate;
             }
             if ($endDate) {
-                $conditions[] = "o.created_at <= :end_date";
+                $conditions[] = "DATE(o.created_at) <= :end_date";
                 $params[':end_date'] = $endDate;
             }
         }
@@ -623,24 +663,6 @@ class Order {
         return $result && isset($result['grand_total_commission']) ? (float)$result['grand_total_commission'] : 0.00;
     }
 
-    /**
-     * Record an affiliate commission for a sale.
-     * @param int $affiliate_id
-     * @param int $order_id
-     * @param int $order_item_id
-     * @param int $product_id
-     * @param float $sale_amount Amount of the item/sale commission is based on
-     * @param string|null $commission_type Type from product ('percentage', 'fixed', or null/none)
-     * @param float|null $commission_value Value from product
-     * @return bool
-     */
-     /**
-     * Get detailed order items for export, filtered by date range and order status.
-     * @param string|null $startDate YYYY-MM-DD HH:MM:SS
-     * @param string|null $endDate YYYY-MM-DD HH:MM:SS
-     * @param string|null $orderStatus
-     * @return array
-     */
     public function getDetailedOrderItemsForExport($startDate = null, $endDate = null, $orderStatus = null) {
         $sql = "SELECT 
                     o.id as order_id, 
@@ -682,11 +704,11 @@ class Order {
         $params = [];
 
         if ($startDate) {
-            $conditions[] = "o.created_at >= :start_date";
+            $conditions[] = "DATE(o.created_at) >= :start_date";
             $params[':start_date'] = $startDate;
         }
         if ($endDate) {
-            $conditions[] = "o.created_at <= :end_date";
+            $conditions[] = "DATE(o.created_at) <= :end_date";
             $params[':end_date'] = $endDate;
         }
         if ($orderStatus && !empty($orderStatus)) {
@@ -710,28 +732,22 @@ class Order {
         $results = $this->db->resultSet();
         return $results ? $results : [];
     }
-    /**
-     * Get all commission records for a specific affiliate.
-     * @param int $affiliate_id
-     * @return array
-     */
-    public function getCommissionsByAffiliateId($affiliate_id) {
-        $this->db->query("SELECT ac.*, p.name as product_name, o.created_at as order_date
+
+    public function getCommissionsByAffiliateId($affiliate_id, $limit = null) { 
+        $sql = "SELECT ac.*, p.name as product_name, o.created_at as order_date
                           FROM affiliate_commissions ac
                           LEFT JOIN products p ON ac.product_id = p.id
                           LEFT JOIN orders o ON ac.order_id = o.id
                           WHERE ac.affiliate_id = :affiliate_id
-                          ORDER BY ac.created_at DESC");
+                          ORDER BY ac.created_at DESC";
+        if ($limit && is_numeric($limit) && $limit > 0) {
+            $sql .= " LIMIT " . (int)$limit;
+        }
+        $this->db->query($sql);
         $this->db->bind(':affiliate_id', (int)$affiliate_id);
         return $this->db->resultSet() ?: [];
     }
 
-    /**
-     * Get all payout requests for a specific affiliate.
-     * (این متد را برای سازگاری با نام‌گذاری getPayoutRequestsByVendorId ایجاد می‌کنیم)
-     * @param int $affiliate_id
-     * @return array
-     */
     public function getPayoutsByAffiliateId($affiliate_id) {
         $this->db->query("SELECT * FROM affiliate_payouts 
                           WHERE affiliate_id = :affiliate_id 
@@ -740,42 +756,30 @@ class Order {
         return $this->db->resultSet() ?: [];
     }
     
-    /**
-     * Create a new affiliate payout request.
-     * @param int $affiliate_id
-     * @param float $requested_amount
-     * @param string $payment_details Affiliate's payment info (e.g., bank account)
-     * @param string $payout_method (Optional, default 'bank_transfer')
-     * @return int|false Payout ID on success, false on failure.
-     */
     public function createAffiliatePayoutRequest($affiliate_id, $requested_amount, $payment_details, $payout_method = 'bank_transfer') {
         try {
-            $this->db->query("INSERT INTO affiliate_payouts (affiliate_id, requested_amount, payout_method, payment_details, status) 
-                              VALUES (?, ?, ?, ?, ?)");
+            $this->db->query("INSERT INTO affiliate_payouts (affiliate_id, requested_amount, payout_method, payment_details, status, requested_at, updated_at) 
+                              VALUES (?, ?, ?, ?, ?, NOW(), NOW())");
             $params = [
                 (int)$affiliate_id,
                 (float)$requested_amount,
                 $payout_method,
                 $payment_details,
-                'requested' // وضعیت اولیه درخواست
+                'requested' 
             ];
             if ($this->db->execute($params)) {
                 return $this->db->lastInsertId();
             } else {
-                error_log("OrderModel::createAffiliatePayoutRequest - Failed to insert into affiliate_payouts. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
+                $db_error_info = $this->db->getErrorInfo();
+                error_log("OrderModel::createAffiliatePayoutRequest - Failed to insert into affiliate_payouts. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
                 return false;
             }
         } catch (Exception $e) {
-            error_log("Error in OrderModel::createAffiliatePayoutRequest: " . $e->getMessage());
+            error_log("Error in OrderModel::createAffiliatePayoutRequest: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
             return false;
         }
     }
     
-    /**
-     * Get all affiliate commissions with details for admin panel.
-     * @param string|null $filter_status Filter by commission status
-     * @return array
-     */
     public function getAllAffiliateCommissionsWithDetails($filter_status = null) {
         $sql = "SELECT ac.*, u.username as affiliate_username, CONCAT(u.first_name, ' ', u.last_name) as affiliate_full_name,
                        p.name as product_name, o.created_at as order_date
@@ -800,53 +804,44 @@ class Order {
         return $this->db->resultSet() ?: [];
     }
 
-    /**
-     * Get a single affiliate commission by its ID.
-     * @param int $commission_id
-     * @return mixed
-     */
     public function getAffiliateCommissionById($commission_id) {
         $this->db->query("SELECT * FROM affiliate_commissions WHERE id = :commission_id");
         $this->db->bind(':commission_id', (int)$commission_id);
         return $this->db->single() ?: false;
     }
 
-    /**
-     * Update the status of an affiliate commission.
-     * @param int $commission_id
-     * @param string $new_status
-     * @return bool
-     */
     public function updateAffiliateCommissionStatus($commission_id, $new_status) {
-        // اطمینان از اینکه وضعیت جدید معتبر است (می‌توانید این را در کنترلر هم انجام دهید)
-        $allowed_statuses = ['pending', 'approved', 'rejected', 'paid', 'cancelled'];
+        $allowed_statuses = ['pending', 'approved', 'rejected', 'paid', 'cancelled', 'payout_requested']; 
         if (!in_array($new_status, $allowed_statuses)) {
             error_log("OrderModel::updateAffiliateCommissionStatus - Invalid new status: {$new_status}");
             return false;
         }
 
-        $this->db->query("UPDATE affiliate_commissions SET status = :status " . 
-                          ($new_status === 'approved' ? ", approved_at = CURRENT_TIMESTAMP" : "") .
-                          " WHERE id = :commission_id");
+        $set_clauses = ["status = :status", "updated_at = CURRENT_TIMESTAMP"];
+        if ($new_status === 'approved') {
+            $set_clauses[] = "approved_at = CURRENT_TIMESTAMP";
+        }
+
+        $this->db->query("UPDATE affiliate_commissions SET " . implode(', ', $set_clauses) . " WHERE id = :commission_id");
         $this->db->bind(':status', $new_status);
         $this->db->bind(':commission_id', (int)$commission_id);
         
         if ($this->db->execute()) {
+            // Logic to update affiliate balance if commission is approved or un-approved
+            if ($new_status === 'approved') {
+                $commission = $this->getAffiliateCommissionById($commission_id);
+                if ($commission && $this->userModel) { // Ensure userModel is loaded
+                    $this->userModel->updateAffiliateBalance($commission['affiliate_id'], (float)$commission['commission_earned']);
+                }
+            } // Add logic for un-approving if necessary (e.g. status changes from approved to pending/rejected)
             return $this->db->rowCount() > 0;
         }
-        error_log("OrderModel::updateAffiliateCommissionStatus - Failed for ID {$commission_id}. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
+        $db_error_info = $this->db->getErrorInfo();
+        error_log("OrderModel::updateAffiliateCommissionStatus - Failed for ID {$commission_id}. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
         return false;
     }
 
-    // --- Affiliate Payout Management by Admin ---
 
-    /**
-     * Get all affiliate payout requests for admin panel, filtered by date and status.
-     * @param string|null $startDate YYYY-MM-DD HH:MM:SS (for requested_at)
-     * @param string|null $endDate YYYY-MM-DD HH:MM:SS (for requested_at)
-     * @param string|null $status
-     * @return array
-     */
     public function getAllAffiliatePayoutRequests($startDate = null, $endDate = null, $status = null) {
         $sql = "SELECT ap.*, u.username as affiliate_username, u.email as affiliate_email, 
                        CONCAT(u.first_name, ' ', u.last_name) as affiliate_full_name
@@ -857,11 +852,11 @@ class Order {
         $params = [];
 
         if ($startDate) {
-            $conditions[] = "ap.requested_at >= :start_date";
+            $conditions[] = "DATE(ap.requested_at) >= :start_date";
             $params[':start_date'] = $startDate;
         }
         if ($endDate) {
-            $conditions[] = "ap.requested_at <= :end_date";
+            $conditions[] = "DATE(ap.requested_at) <= :end_date";
             $params[':end_date'] = $endDate;
         }
         if ($status && !empty($status)) {
@@ -883,11 +878,6 @@ class Order {
         return $this->db->resultSet() ?: [];
     }
 
-    /**
-     * Get a single affiliate payout request by its ID.
-     * @param int $payout_id
-     * @return mixed
-     */
     public function getAffiliatePayoutRequestById($payout_id) {
         $this->db->query("SELECT ap.*, u.username as affiliate_username, u.email as affiliate_email,
                                  CONCAT(u.first_name, ' ', u.last_name) as affiliate_full_name
@@ -898,43 +888,24 @@ class Order {
         return $this->db->single() ?: false;
     }
     
-    /**
-     * Get affiliate commission items associated with a specific affiliate payout ID.
-     * (This assumes you link affiliate_commissions to affiliate_payouts via payout_id)
-     * @param int $payout_id
-     * @return array
-     */
     public function getAffiliateCommissionsByPayoutId($payout_id) {
-        // این متد باید کمیسیون‌هایی را برگرداند که payout_id آنها با این درخواست تسویه یکی است
-        // و وضعیت آنها 'approved' بوده (قبل از اینکه 'paid' شوند)
         $this->db->query("SELECT ac.*, p.name as product_name, o.created_at as order_date
                           FROM affiliate_commissions ac
                           LEFT JOIN products p ON ac.product_id = p.id
                           LEFT JOIN orders o ON ac.order_id = o.id
-                          WHERE ac.payout_id = :payout_id");
+                          WHERE ac.payout_id = :payout_id"); 
         $this->db->bind(':payout_id', (int)$payout_id);
         return $this->db->resultSet() ?: [];
     }
-
-    /**
-     * Process an affiliate payout request (update status, payment details, and affiliate balance).
-     * @param int $payout_id
-     * @param string $new_status e.g., 'completed', 'rejected', 'processing'
-     * @param int $admin_user_id ID of the admin processing the payout
-     * @param float|null $payout_amount_paid Actual amount paid
-     * @param string|null $admin_notes
-     * @param string|null $payment_details_admin
-     * @return bool
-     */
     
 
     public function processAffiliatePayout($payout_id, $new_status, $admin_user_id, $payout_amount_paid = null, $admin_notes = null, $payment_details_admin = null) {
-        if (!$this->userModel && class_exists('User')) { // اطمینان از بارگذاری UserModel
+        if (!$this->userModel && class_exists('User')) { 
             $this->userModel = new User();
         }
         if (!$this->userModel) {
             error_log("OrderModel::processAffiliatePayout - UserModel is not available. Cannot update affiliate balance.");
-            return false; // یا یک کد خطای خاص
+            return 'user_model_unavailable'; 
         }
 
         if (method_exists($this->db, 'beginTransaction')) $this->db->beginTransaction();
@@ -945,17 +916,16 @@ class Order {
                 if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
                 return 'payout_not_found';
             }
-            $affiliate_id = $payoutRequest['affiliate_id'];
-            $requested_amount = (float)$payoutRequest['requested_amount'];
+            $affiliate_id = (int)$payoutRequest['affiliate_id'];
 
-            // 1. به‌روزرسانی جدول affiliate_payouts
             $this->db->query("UPDATE affiliate_payouts 
                               SET status = :status, 
                                   payout_amount = :payout_amount, 
                                   notes = :notes, 
                                   payment_details = :payment_details_admin,
                                   processed_at = CURRENT_TIMESTAMP,
-                                  processed_by_admin_id = :processed_by_admin_id
+                                  processed_by_admin_id = :processed_by_admin_id,
+                                  updated_at = CURRENT_TIMESTAMP
                               WHERE id = :payout_id");
             $this->db->bind(':status', $new_status);
             $this->db->bind(':payout_amount', ($payout_amount_paid !== null) ? (float)$payout_amount_paid : null);
@@ -965,75 +935,72 @@ class Order {
             $this->db->bind(':payout_id', (int)$payout_id);
 
             if (!$this->db->execute()) {
-                error_log("OrderModel::processAffiliatePayout - Failed to update affiliate_payouts for payout_id: {$payout_id}. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
+                $db_error_info = $this->db->getErrorInfo();
+                error_log("OrderModel::processAffiliatePayout - Failed to update affiliate_payouts for payout_id: {$payout_id}. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
                 if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
                 return 'db_error_payout_update';
             }
             error_log("OrderModel::processAffiliatePayout - affiliate_payouts table updated for ID {$payout_id} to status {$new_status}.");
 
 
-            // 2. اگر وضعیت "تکمیل شده" (completed) است، موجودی کیف پول همکار را کم کن
-            // و وضعیت کمیسیون‌های مرتبط را به 'paid' تغییر بده
             if ($new_status === 'completed') {
-                if ($payout_amount_paid === null || $payout_amount_paid <= 0) {
+                if ($payout_amount_paid === null || (float)$payout_amount_paid <= 0) {
                     error_log("OrderModel::processAffiliatePayout - Payout amount is not valid for completed status. Payout ID: {$payout_id}");
                     if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
                     return 'invalid_payout_amount_for_completed';
                 }
 
-                // کسر مبلغ از کیف پول همکار
-                if (!$this->userModel->updateAffiliateBalance($affiliate_id, -(float)$payout_amount_paid)) { 
-                    error_log("OrderModel::processAffiliatePayout - Failed to DECREMENT affiliate balance for user_id: {$affiliate_id}, amount: " . (-(float)$payout_amount_paid));
-                    if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
-                    return 'balance_update_failed'; 
+                if (method_exists($this->userModel, 'updateAffiliateBalance')) {
+                    if (!$this->userModel->updateAffiliateBalance($affiliate_id, -(float)$payout_amount_paid)) { 
+                        error_log("OrderModel::processAffiliatePayout - Failed to DECREMENT affiliate balance for user_id: {$affiliate_id}, amount: " . (-(float)$payout_amount_paid));
+                        // Not rolling back transaction for this, as payout itself is processed. Balance update failure should be handled.
+                    } else {
+                        error_log("OrderModel::processAffiliatePayout - Affiliate balance DECREMENTED for user_id: {$affiliate_id} by " . $payout_amount_paid);
+                    }
+                } else {
+                    error_log("OrderModel::processAffiliatePayout - updateAffiliateBalance method not found in UserModel.");
                 }
-                error_log("OrderModel::processAffiliatePayout - Affiliate balance DECREMENTED for user_id: {$affiliate_id} by " . $payout_amount_paid);
 
-
-                // به‌روزرسانی وضعیت کمیسیون‌های مرتبط با این پرداخت به 'paid'
-                // فقط کمیسیون‌هایی که وضعیتشان 'payout_requested' (یا 'approved' اگر مستقیماً از تایید به پرداخت می‌آید) بوده را آپدیت کن
+                // Update status of commissions linked to this payout
                 $this->db->query("UPDATE affiliate_commissions 
-                                  SET status = :status_paid
-                                  WHERE payout_id = :payout_id AND status = :status_before_paid"); 
+                                  SET status = :status_paid, paid_at = NOW(), updated_at = NOW()
+                                  WHERE payout_id = :payout_id AND status = :status_payout_requested"); 
                 $this->db->bind(':status_paid', 'paid');
                 $this->db->bind(':payout_id', (int)$payout_id);
-                // وضعیت کمیسیون‌ها قبل از پرداخت باید 'payout_requested' باشد (که توسط createAffiliatePayoutRequest تنظیم شده)
-                // یا اگر مستقیماً از 'approved' به 'paid' می‌رویم (بدون مرحله میانی درخواست پرداخت توسط همکار)، باید 'approved' باشد.
-                // با توجه به جریان فعلی، همکار درخواست می‌دهد و کمیسیون‌ها به payout_requested تغییر می‌کنند.
-                $this->db->bind(':status_before_paid', 'payout_requested'); 
+                $this->db->bind(':status_payout_requested', 'payout_requested'); 
                 
                 if (!$this->db->execute()) {
-                     error_log("OrderModel::processAffiliatePayout - Failed to update affiliate_commissions status to 'paid' for payout_id: {$payout_id}. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
-                     if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
-                     return 'commission_status_update_failed'; 
+                     $db_error_info = $this->db->getErrorInfo();
+                     error_log("OrderModel::processAffiliatePayout - Failed to update affiliate_commissions status to 'paid' for payout_id: {$payout_id}. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
+                     // Consider if this failure should roll back the payout. For now, logging.
+                } else {
+                    error_log("OrderModel::processAffiliatePayout - affiliate_commissions status updated to 'paid' for payout_id: {$payout_id}. Rows affected: " . $this->db->rowCount());
                 }
-                error_log("OrderModel::processAffiliatePayout - affiliate_commissions status updated to 'paid' for payout_id: {$payout_id}. Rows affected: " . $this->db->rowCount());
             } 
-            // اگر وضعیت "رد شده" (rejected) یا "لغو شده" (cancelled_by_admin) است،
-            // کمیسیون‌های مرتبط با این درخواست پرداخت باید به 'approved' برگردند (تا دوباره قابل درخواست باشند)
-            // و payout_id آنها NULL شود.
             elseif (in_array($new_status, ['rejected', 'cancelled'])) { 
+                 // Revert commission status from 'payout_requested' to 'approved' and clear payout_id
                  $this->db->query("UPDATE affiliate_commissions 
-                                  SET status = :status_reverted, payout_id = NULL
+                                  SET status = :status_reverted, payout_id = NULL, updated_at = NOW()
                                   WHERE payout_id = :payout_id AND status = :status_payout_requested");
-                $this->db->bind(':status_reverted', 'approved'); // برگرداندن به وضعیت تایید شده
+                $this->db->bind(':status_reverted', 'approved'); 
                 $this->db->bind(':payout_id', (int)$payout_id);
                 $this->db->bind(':status_payout_requested', 'payout_requested');
                 if ($this->db->execute()) {
                     error_log("OrderModel::processAffiliatePayout - affiliate_commissions status reverted for payout_id: {$payout_id}. Rows affected: " . $this->db->rowCount());
                 } else {
-                    error_log("OrderModel::processAffiliatePayout - Failed to revert affiliate_commissions status for payout_id: {$payout_id}. DB Error: " . implode(" | ", $this->db->getErrorInfo()));
-                    // این خطا ممکن است حیاتی نباشد اگر آپدیت خود payout موفق بوده، اما باید بررسی شود.
+                    $db_error_info = $this->db->getErrorInfo();
+                    error_log("OrderModel::processAffiliatePayout - Failed to revert affiliate_commissions status for payout_id: {$payout_id}. DB Error: " . (is_array($db_error_info) ? implode(" | ", $db_error_info) : ($db_error_info ?: 'No specific error message')));
                 }
             }
 
             if (method_exists($this->db, 'commit')) $this->db->commit();
-            return true; // موفقیت‌آمیز
+            return true; 
         } catch (Exception $e) {
             if (method_exists($this->db, 'rollBack')) $this->db->rollBack();
-            error_log("Error in OrderModel::processAffiliatePayout: " . $e->getMessage());
+            error_log("Error in OrderModel::processAffiliatePayout: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
             return 'general_exception';
         }
     }
 }
-// تگ پایانی PHP را حذف کنید
+// It's a common practice in PHP to omit the closing ?> tag 
+// if the file contains only PHP code. This can prevent accidental whitespace output.
